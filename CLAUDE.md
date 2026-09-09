@@ -68,6 +68,7 @@ tuh_task()                                      uart_output_flush(): 批量出�
 | `CMakeLists.txt` | Top-level: sets board to `pico2`, includes Pico SDK |
 | `lib/pico_pio_usb/` | Vendored PIO-USB library (sekigon-gonnoc) |
 | `tools/uart_monitor.py` | 上位机串口监视脚本（pyserial，自动探测/冻结/清屏） |
+| `index.html` | Web Serial 日志查看器：921600，`[TUSB]` 三态过滤（全部/仅/排除），授权持久化 + `connect` 事件自动重连，行缓冲按 `\n` 切行，按 TAG 着色，上限 8000 行 |
 
 ## TinyUSB Configuration Notes
 

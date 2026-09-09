@@ -98,6 +98,18 @@ python3 tools/uart_monitor.py -p /dev/tty.usbserialXXXX -b 921600  # 指定串�
 
 运行中单键：`f` = 冻结/恢复滚动、`c` = 清屏、`q` = 退出。
 
+### Web 日志查看器
+
+根目录的 [index.html](index.html) 是基于 Web Serial API 的网页查看器（Chrome/Edge，需 https 或 localhost）：
+
+```bash
+python3 -m http.server   # 工程根目录运行，浏览器访问 http://localhost:8000/
+```
+
+- 过滤选择：全部日志 / 仅 `[TUSB]` / 排除 `[TUSB]`，切换即时生效；
+- 自动重连：授权一次后，设备断开重插（含刷固件）会在重枚举瞬间自动恢复连接，全程无需再次确认；
+- 断开重连后的半行由行缓冲自动拼接；日志按 TAG 着色，上限 8000 行。
+
 ## 目录结构
 
 ```
@@ -110,6 +122,7 @@ src/
 └── CMakeLists.txt        # 构建配置
 tools/
 └── uart_monitor.py       # 上位机串口监视脚本
+index.html                # Web Serial 日志查看器（自动重连 / [TUSB] 过滤）
 lib/
 └── pico_pio_usb/         # PIO-USB 库（第三方）
 ```

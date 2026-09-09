@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pico-hid-debugger 日志查看器</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    background: #0d1117; color: #c9d1d9;
+    font-family: system-ui, -apple-system, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 8px 12px; background: #161b22; border-bottom: 1px solid #30363d;
+  }
+  header .title { font-weight: 600; margin-right: 4px; }
+  button, select {
+    background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+    border-radius: 6px; padding: 4px 10px; font-size: 13px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: #30363d; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: #238636; border-color: #2ea043; color: #fff; }
+  button.primary:hover:not(:disabled) { background: #2ea043; }
+  label.chk { display: flex; align-items: center; gap: 4px; font-size: 13px; cursor: pointer; }
+  #status { font-size: 12px; padding: 3px 10px; border-radius: 10px; background: #30363d; }
+  #status.ok   { background: #12351c; color: #7ee787; }
+  #status.bad  { background: #43202a; color: #ffa198; }
+  #status.wait { background: #3a2d12; color: #e3b341; }
+  #count { margin-left: auto; font-size: 12px; color: #8b949e; }
+  #logwrap { position: relative; flex: 1; min-height: 0; }
+  #log {
+    height: 100%; overflow-y: auto; margin: 0; padding: 6px 10px;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  #log div { white-space: pre-wrap; word-break: break-all; min-height: 18px; }
+  #log .t-tusb  { color: #8b949e; }                 /* TinyUSB 内部日志：灰 */
+  #log .t-hid   { color: #a5d6ff; }                 /* 报文：蓝 */
+  #log .t-mount { color: #7ee787; }                 /* 挂载/拔出：绿 */
+  #log .t-err   { color: #ffa198; }                 /* 错误/丢弃：红 */
+  #hint { padding: 4px 12px 10px; color: #e3b341; font-size: 13px; }
+  #bottomChip {
+    position: absolute; right: 16px; bottom: 14px; display: none;
+    background: #1f6feb; color: #fff; border: none; border-radius: 14px;
+    padding: 5px 14px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.5);
+  }
+</style>
+</head>
+<body>
+<header>
+  <span class="title">pico-hid-debugger</span>
+  <span id="status">未连接</span>
+  <button id="btnConnect" class="primary">连接串口</button>
+  <button id="btnPick" title="重新弹出系统串口选择框">选择设备…</button>
+  <select id="filter" title="日志过滤">
+    <option value="all">全部日志</option>
+    <option value="tusb">仅 [TUSB]</option>
+    <option value="no-tusb">排除 [TUSB]</option>
+  </select>
+  <label class="chk"><input type="checkbox" id="autoscroll" checked> 自动滚动</label>
+  <button id="btnClear">清屏</button>
+  <span id="count">0 行</span>
+</header>
+<div id="hint" style="display:none"></div>
+<div id="logwrap">
+  <div id="log"></div>
+  <button id="bottomChip">↓ 回到底部</button>
+</div>
+
+<script>
+'use strict';
+const BAUD = 921600;            // 与固件 UART0 一致
+const MAX_LINES = 8000;         // 内存与 DOM 上限（超出丢最旧）
+const KEY_STORE = 'pico-hid-debugger.portKey';
+
+const $ = id => document.getElementById(id);
+const logEl = $('log'), statusEl = $('status'), countEl = $('count');
+const btnConnect = $('btnConnect'), btnPick = $('btnPick'), btnClear = $('btnClear');
+const filterSel = $('filter'), autoChk = $('autoscroll'), chip = $('bottomChip');
+const hintEl = $('hint');
+
+let port = null;                // 当前使用的 SerialPort
+let portKey = '';               // "vid:pid" 标识，localStorage 记忆
+let running = false;            // 读循环是否活跃
+let wantConnected = false;      // 是否期望保持连接（手动断开后关闭自动重连）
+let currentReader = null;
+let lineBuf = '';               // 跨 read() 的半行缓冲
+let allLines = [];              // [{cls, text}]，过滤切换时全量重渲染
+let pending = [];               // 待 rAF 批量上屏的行
+let flushScheduled = false;
+
+// ---------------------------------------------------------------- 环境检查
+if (!('serial' in navigator)) {
+  hintEl.style.display = 'block';
+  hintEl.textContent = '此浏览器不支持 Web Serial API：请使用 Chrome / Edge（89+），'
+    + '并通过 https 或 http://localhost 打开本页（file:// 打开若不可用，'
+    + '可在工程目录运行 python3 -m http.server 后访问 http://localhost:8000/）。';
+  btnConnect.disabled = btnPick.disabled = true;
+}
+
+// ---------------------------------------------------------------- 工具
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const keyOf = p => { try { const i = p.getInfo();
+  return (i.usbVendorId || 0).toString(16) + ':' + (i.usbProductId || 0).toString(16);
+} catch { return '?'; } };
+
+function setStatus(text, cls) {
+  statusEl.textContent = text;
+  statusEl.className = cls || '';
+}
+
+// 行分类：配色 + 过滤判定
+function classify(text) {
+  if (text.startsWith('[TUSB]'))  return 't-tusb';
+  if (text.startsWith('[ERROR]') || text.startsWith('[DROP]')) return 't-err';
+  if (text.startsWith('[MOUNT]') || text.startsWith('[DEVRM]') ||
+      text.startsWith('[HIDMT]') || text.startsWith('[UNHID]'))  return 't-mount';
+  if (text.startsWith('[HID]') || text.startsWith('[HID+]'))   return 't-hid';
+  return '';
+}
+const passFilter = cls =>
+  filterSel.value === 'all' ? true :
+  filterSel.value === 'tusb' ? cls === 't-tusb' : cls !== 't-tusb';
+
+// ---------------------------------------------------------------- 上屏
+function appendLine(text) {
+  const cls = classify(text);
+  allLines.push({ cls, text });
+  if (allLines.length > MAX_LINES) allLines.shift();
+  if (!passFilter(cls)) return;
+  pending.push({ cls, text });
+  scheduleFlush();
+}
+
+function scheduleFlush() {
+  if (flushScheduled) return;
+  flushScheduled = true;
+  requestAnimationFrame(flush);
+}
+
+function flush() {
+  flushScheduled = false;
+  if (!pending.length) return;
+  const frag = document.createDocumentFragment();
+  for (const { cls, text } of pending) {
+    const div = document.createElement('div');
+    div.className = cls;
+    div.textContent = text;          // textContent 防注入
+    frag.appendChild(div);
+  }
+  pending = [];
+  logEl.appendChild(frag);
+  while (logEl.children.length > MAX_LINES) logEl.removeChild(logEl.firstChild);
+  if (autoChk.checked) logEl.scrollTop = logEl.scrollHeight;
+  countEl.textContent = allLines.length + ' 行';
+}
+
+function renderAll() {               // 过滤模式切换：全量重渲染
+  pending = [];
+  logEl.textContent = '';
+  const frag = document.createDocumentFragment();
+  for (const { cls, text } of allLines) {
+    if (!passFilter(cls)) continue;
+    const div = document.createElement('div');
+    div.className = cls;
+    div.textContent = text;
+    frag.appendChild(div);
+  }
+  logEl.appendChild(frag);
+  if (autoChk.checked) logEl.scrollTop = logEl.scrollHeight;
+}
+
+// ---------------------------------------------------------------- 字节流 → 行
+function handleBytes(value) {
+  lineBuf += new TextDecoder().decode(value, { stream: true });
+  let nl;
+  while ((nl = lineBuf.indexOf('\n')) >= 0) {
+    const line = lineBuf.slice(0, nl).replace(/\r$/, '');
+    lineBuf = lineBuf.slice(nl + 1);
+    appendLine(line);
+  }
+  // 防御：无换行的异常超长堆积时截断
+  if (lineBuf.length > 4096) { appendLine(lineBuf); lineBuf = ''; }
+}
+
+// ---------------------------------------------------------------- 串口
+async function readLoop(p) {
+  running = true;
+  lineBuf = '';
+  setStatus('已连接 ' + keyOf(p), 'ok');
+  btnConnect.textContent = '断开';
+
+  while (running && p.readable) {
+    const reader = p.readable.getReader();
+    currentReader = reader;
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (value) handleBytes(value);
+        if (done) break;
+      }
+    } catch { /* 设备拔出等：流报错，落到下方收尾 */ }
+    finally {
+      try { reader.releaseLock(); } catch {}
+      if (currentReader === reader) currentReader = null;
+    }
+    if (running && p.readable) continue;   // EOF 但口还在：重挂 reader
+    break;
+  }
+
+  running = false;
+  if (port === p) {
+    if (lineBuf) { appendLine(lineBuf); lineBuf = ''; }  // 残行收尾
+    if (wantConnected) setStatus('已断开 · 等待重连…', 'wait');
+    else { setStatus('未连接'); btnConnect.textContent = '连接串口'; }
+  }
+}
+
+async function openPort(p) {
+  if (running) return;
+  portKey = keyOf(p);
+  localStorage.setItem(KEY_STORE, portKey);
+  setStatus('连接中…', 'wait');
+  // 首次立即 open；OS 枚举尚未就绪时短暂重试，保证"第一时间"重连
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await p.open({ baudRate: BAUD });
+      break;
+    } catch (err) {
+      if (attempt >= 12) { setStatus('打开失败：' + err.message, 'bad'); return; }
+      await sleep(150);
+    }
+  }
+  port = p;
+  wantConnected = true;
+  readLoop(p);
+}
+
+async function closePort() {
+  wantConnected = false;
+  running = false;
+  try { if (currentReader) await currentReader.cancel(); } catch {}
+  try { if (port) await port.close(); } catch {}
+  setStatus('未连接');
+  btnConnect.textContent = '连接串口';
+}
+
+// 连接按钮：优先连已授权且匹配记忆标识的设备（免手势），否则弹选择框
+btnConnect.addEventListener('click', async () => {
+  if (running) { closePort(); return; }
+  const ports = await navigator.serial.getPorts();
+  const target = ports.find(p => keyOf(p) === portKey) || port || ports[0];
+  if (target) { openPort(target); return; }
+  pickPort();
+});
+
+// 选择设备：总是弹系统选择框（需要用户手势）
+btnPick.addEventListener('click', pickPort);
+async function pickPort() {
+  try {
+    const p = await navigator.serial.requestPort();
+    port = null;
+    openPort(p);
+  } catch { /* 用户取消 */ }
+}
+
+// 断开/重连事件：核心自动重连逻辑。
+// 授权持久化（requestPort 一次即可），重插设备触发 connect 后
+// 直接 open，全程无需用户手势。
+navigator.serial?.addEventListener('disconnect', e => {
+  if (e.port !== port) return;
+  running = false;                       // 读循环随即报错退出
+  if (wantConnected) setStatus('已断开 · 等待重连…', 'wait');
+});
+
+navigator.serial?.addEventListener('connect', e => {
+  // 仅当处于"期望连接"且当前未连接时才抢连；
+  // 记忆过设备标识时，只自动重连同一台适配器
+  if (running || !wantConnected) return;
+  if (portKey && keyOf(e.port) !== portKey) return;
+  openPort(e.port);
+});
+
+// ---------------------------------------------------------------- 交互杂项
+filterSel.addEventListener('change', renderAll);
+
+btnClear.addEventListener('click', () => { allLines = []; pending = []; logEl.textContent = ''; countEl.textContent = '0 行'; });
+
+autoChk.addEventListener('change', () => {
+  if (autoChk.checked) { logEl.scrollTop = logEl.scrollHeight; chip.style.display = 'none'; }
+});
+
+logEl.addEventListener('scroll', () => {
+  const atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 40;
+  if (!atBottom && autoChk.checked) autoChk.checked = false;
+  chip.style.display = atBottom ? 'none' : 'block';
+});
+
+chip.addEventListener('click', () => {
+  autoChk.checked = true;
+  chip.style.display = 'none';
+  logEl.scrollTop = logEl.scrollHeight;
+});
+
+// ---------------------------------------------------------------- 启动
+(async () => {
+  if (!('serial' in navigator)) return;
+  portKey = localStorage.getItem(KEY_STORE) || '';
+  // 页面加载即恢复连接：已授权端口不需要任何用户手势
+  const ports = await navigator.serial.getPorts();
+  if (!ports.length) return;
+  let target = ports.find(p => keyOf(p) === portKey) || (ports.length === 1 ? ports[0] : null);
+  if (target) openPort(target);
+})();
+</script>
+</body>
+</html>
