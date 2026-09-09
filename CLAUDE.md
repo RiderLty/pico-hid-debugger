@@ -63,7 +63,7 @@ tuh_task()                                      uart_output_flush(): 批量出�
 | `src/hid_host_app.c/.h` | 信息采集模块：全部 tuh 回调、描述符抓取状态机（异步控制传输链）、hexdump 格式化 |
 | `src/uart_output.c/.h` | 跨核传输层：SPSC 字节块队列、UART0 初始化（GPIO2/3 @ 921600）、core0 批量写出 |
 | `src/tusb_log.c/.h` | TinyUSB 内部日志桥接：`CFG_TUSB_DEBUG_PRINTF` 挂接 `tu_printf`，片段按行组装（core1 临界区防穿插），`[TUSB]` 头入队 |
-| `src/tusb_config.h` | TinyUSB 配置：仅 Host 栈（CFG_TUD_ENABLED=0），Host HID×16 + Hub，枚举缓冲 512，`CFG_TUSB_DEBUG=2` |
+| `src/tusb_config.h` | TinyUSB 配置：仅 Host 栈（CFG_TUD_ENABLED=0），Host HID×16 + Hub，枚举缓冲 512，`CFG_TUSB_DEBUG=3` |
 | `src/CMakeLists.txt` | 构建目标，链接 pico_stdlib, pico_pio_usb, tinyusb_host；stdio UART/USB 显式关闭 |
 | `CMakeLists.txt` | Top-level: sets board to `pico2`, includes Pico SDK |
 | `lib/pico_pio_usb/` | Vendored PIO-USB library (sekigon-gonnoc) |
@@ -76,7 +76,8 @@ tuh_task()                                      uart_output_flush(): 批量出�
 - `CFG_TUH_ENUMERATION_BUFSIZE` 为 512：复杂设备描述符常超 256 字节；报告描述符超过该值时 TinyUSB 不抓取（`desc_report=NULL`），本固件显示 `[RPTDS] not captured`。
 - `CFG_TUH_HID` is set to 16 (max HID instances). `CFG_TUH_HUB` is 1, `CFG_TUH_DEVICE_MAX` is 4 (hub 下设备数，不含 hub 自身)。
 - `tuh_hid_set_default_protocol(HID_PROTOCOL_REPORT)`：拿设备原生报文（Boot 协议下设备改写为简化布局，丢失厂商扩展字段）。
-- `CFG_TUSB_DEBUG=2` 开启 TinyUSB 内部日志（1=错误 2=+警告 3=+信息，级别 3 极啰嗦且挤占 UART 带宽）；经 `CFG_TUSB_DEBUG_PRINTF=tusb_log_printf` 重定向到 `src/tusb_log.c`：片段按 `\n` 组装成行（TinyUSB 日志不保证行完整）、加 `[TUSB]` 头走同一 SPSC 队列。`tu_printf` 钩子按 TinyUSB 约定返回 `int`；`tusb_log.h` 由 `tusb_config.h` include，使所有 TinyUSB 翻译单元拿到原型。`tusb_log_init()` 必须在 `tuh_init()` 之前调用（最早日志出现在栈初始化期间）。
+- `CFG_TUSB_DEBUG=3` 开启 TinyUSB 内部日志（1=错误 2=+警告 3=+信息，级别 3 极啰嗦且挤占 UART 带宽）；经 `CFG_TUSB_DEBUG_PRINTF=tusb_log_printf` 重定向到 `src/tusb_log.c`：片段按 `\n` 组装成行（TinyUSB 日志不保证行完整）、加 `[TUSB]` 头走同一 SPSC 队列。`tu_printf` 钩子按 TinyUSB 约定返回 `int`；`tusb_log.h` 由 `tusb_config.h` include，使所有 TinyUSB 翻译单元拿到原型。`tusb_log_init()` 必须在 `tuh_init()` 之前调用（最早日志出现在栈初始化期间）。
+- **TinyUSB hid_host.c 编译补丁**（顶层 CMakeLists.txt）：SDK 捆绑的 hid_host.c 在 `CFG_TUSB_DEBUG>=3` 时引用已重构掉的成员（`p_hid->epin_buf/epout_buf`，实际缓冲已移入 `hidh_epbuf_t`），无法编译。configure 期生成修正副本（改用 `epbuf->epin/epout`）到 build 目录并替换 `tinyusb_host_base` INTERFACE 源列表中的原始文件，副本编译需补 `src/class/hid` 显式 include 路径——SDK 文件不动；上游修复后 `string(FIND)` 不再命中，补丁自动失效。
 - 描述符抓取缓冲（`desc_state_t` 内）按 TinyUSB 惯例 `CFG_TUSB_MEM_ALIGN`（4 字节）对齐。
 
 ## Known Limitations

@@ -51,7 +51,7 @@
 // TinyUSB 内部日志级别：1=错误 2=警告+错误（含枚举过程） 3=信息（最啰嗦）。
 // 日志经 CFG_TUSB_DEBUG_PRINTF 挂接的 tusb_log_printf() 按行组装，
 // 以 [TUSB] 头从 UART 输出；级别 3 在高流量设备下会挤占带宽，按需调低
-#define CFG_TUSB_DEBUG           2
+#define CFG_TUSB_DEBUG           3
 
 // 把 TinyUSB 的 tu_printf 重定向到本工程的日志桥接（src/tusb_log.c）
 #define CFG_TUSB_DEBUG_PRINTF    tusb_log_printf
