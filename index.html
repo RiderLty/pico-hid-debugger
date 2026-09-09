@@ -110,7 +110,7 @@ let allLines = [];              // 全量模型：[{cls, text}]，导出与过�
 let viewLines = [];             // 当前过滤视图（虚拟滚动的渲染源）
 let follow = true;              // 跟随滚动（贴底）
 let missCount = 0;              // 非跟随期间新到的行数
-let needRender = false, renderScheduled = false;
+let renderScheduled = false;
 
 // ---------------------------------------------------------------- 环境检查
 if (!('serial' in navigator)) {
@@ -152,42 +152,60 @@ function scheduleRender() {
   requestAnimationFrame(() => { renderScheduled = false; renderWindow(); });
 }
 
+// 行 DOM 池：复用节点只换文本/类名，避免每帧重建 + GC
+const rowPool = [];
+
 function renderWindow() {
   const total = viewLines.length;
-  if (follow && total) logEl.scrollTop = total * ROW_H;   // 贴底跟随
-
-  const vh = logEl.clientHeight, st = logEl.scrollTop;
-  const start = Math.max(0, Math.floor(st / ROW_H) - OVERSCAN);
-  const end = Math.min(total, Math.ceil((st + vh) / ROW_H) + OVERSCAN);
-
-  const frag = document.createDocumentFragment();
-  for (let i = start; i < end; i++) {
-    const div = document.createElement('div');
-    div.className = viewLines[i].cls;
-    div.textContent = viewLines[i].text;      // textContent 防注入
-    frag.appendChild(div);
+  const vh = logEl.clientHeight;
+  let start, end;
+  if (follow) {
+    // 跟随：直接定位最末窗口，无需读取滚动位置
+    end = total;
+    start = Math.max(0, total - Math.ceil(vh / ROW_H) - OVERSCAN);
+  } else {
+    const st = logEl.scrollTop;
+    start = Math.max(0, Math.floor(st / ROW_H) - OVERSCAN);
+    end = Math.min(total, Math.ceil((st + vh) / ROW_H) + OVERSCAN);
   }
-  rowsEl.textContent = '';
-  rowsEl.appendChild(frag);
+
   padTop.style.height = (start * ROW_H) + 'px';
   padBot.style.height = ((total - end) * ROW_H) + 'px';
+  const need = end - start;
+  while (rowPool.length < need) {
+    const div = document.createElement('div');
+    rowsEl.appendChild(div);
+    rowPool.push(div);
+  }
+  while (rowPool.length > need) rowPool.pop().remove();
+  for (let i = 0; i < need; i++) {
+    const div = rowPool[i], ln = viewLines[start + i];
+    if (div._cls !== ln.cls) { div._cls = ln.cls; div.className = ln.cls; }
+    if (div._text !== ln.text) { div._text = ln.text; div.textContent = ln.text; }
+  }
+
+  // 关键顺序：先写占位高度、最后设置滚动位置。若先设 scrollTop，
+  // 会被旧的 scrollHeight 截断到差一帧的位置到不了底，还会被
+  // scroll 事件误判为"用户上滚"而关闭跟随（跟随失效的根因）
+  if (follow && total) logEl.scrollTop = logEl.scrollHeight;
+
+  if (!follow && missCount) chip.textContent = '↓ 回到底部（+' + missCount + '）';
   countEl.textContent = total + ' 行';
 }
 
 function appendLine(text) {
   const cls = classify(text);
   allLines.push({ cls, text });
-  if (allLines.length > MAX_LINES) allLines.shift();
   if (passFilter(cls)) {
     viewLines.push(allLines[allLines.length - 1]);
-    if (viewLines.length > MAX_LINES) viewLines.shift();
     if (follow) scheduleRender();
     else { missCount++; chip.textContent = '↓ 回到底部（+' + missCount + '）'; }
   }
-  if (allLines.length === MAX_LINES || viewLines.length === MAX_LINES) {
-    // 上限截断后行号整体偏移，直接重算窗口
-    scheduleRender();
-  }
+  // 超上限时批量截断头部（逐条 shift 为 O(n)，高频下代价大）
+  if (allLines.length > MAX_LINES + 2000)
+    allLines.splice(0, allLines.length - MAX_LINES);
+  if (viewLines.length > MAX_LINES + 2000)
+    viewLines.splice(0, viewLines.length - MAX_LINES);
 }
 
 function rebuildView() {
@@ -335,6 +353,7 @@ baudSel.addEventListener('change', () => {
 
 btnClear.addEventListener('click', () => {
   allLines = []; viewLines = []; lineBuf = '';
+  rowPool.length = 0;                  // 同步清 DOM 池，防复用游离节点
   rowsEl.textContent = ''; padTop.style.height = '0'; padBot.style.height = '0';
   countEl.textContent = '0 行';
 });
