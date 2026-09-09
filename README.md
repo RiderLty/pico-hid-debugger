@@ -19,7 +19,7 @@ PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显
 
 每行 `\r\n` 结尾，`[TAG]` 定界。格式约定：
 
-- **TAG 固定 5 字符宽**，不足用空格补齐（`[HID  ]`、`[DROP ]`、`[MOUNT]`），所有行首列对齐；
+- **TAG 定宽**：`[TAG]` 中括号紧跟 TAG 本体，其后用空格补齐到**第 8 列**再输出内容，所有行的内容列对齐（`[HID]` 补 3 格、`[DROP]` 补 2 格、`[MOUNT]` 补 1 格）；
 - **HEX 转储行**（`DEVDS`/`CFGDS`/`RPTDS`/`HID`）前缀含 `len=`（整块总长）与 `off=`（本行起始偏移），前缀用空格补齐到**固定第 40 列**后才输出数据，每行 16 字节——超长报文（如 DS5 手柄 64 字节报告）跨行数据列严格垂直对齐。
 
 | 行格式 | 含义 |
@@ -33,13 +33,13 @@ PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显
 | `[STRDS] dev=%u Mfg(1)="..." / Prod(2)="..." / Ser(3)="..."` | 字符串描述符（UTF-16 转可打印 ASCII） |
 | `[HIDMT] dev=%u vid=%04x pid=%04x itf=%u proto=%s cls=%02x sub=%02x eps=%u` | HID 接口挂载（proto: None/Keyboard/Mouse） |
 | `[RPTDS] dev=%u itf=%u len=%u off=..: <hex>` | HID 报告描述符原始转储 |
-| `[HID  ] dev=%u itf=%u len=%u off=%u: <hex>` | **原始报文**（超 16 字节折行，`off=` 递增标注行内偏移） |
+| `[HID]   dev=%u itf=%u len=%u off=%u: <hex>` | **原始报文**（超 16 字节折行，`off=` 递增标注行内偏移） |
 | `[UNHID] dev=%u itf=%u` | HID 接口拔出 |
 | `[DEVRM] dev=%u` | 设备移除 |
 | `[ERROR] dev=%u ...` | 描述符抓取失败 / 报告订阅失败等 |
-| `[DROP ] lost_lines=%lu` | UART 队列溢出丢弃量补报 |
+| `[DROP]  lost_lines=%lu` | UART 队列溢出丢弃量补报 |
 
-挂载时序示例（HEX 数据列全部对齐在第 40 列）：
+挂载时序示例（内容列对齐在第 8 列，HEX 数据列对齐在第 40 列）：
 
 ```
 [MOUNT] dev=2 vid=046d pid=c52b
@@ -54,11 +54,11 @@ PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显
 [STRDS] dev=2 Prod(2)="USB Receiver"
 [HIDMT] dev=2 vid=046d pid=c52b itf=0 proto=Mouse cls=03 sub=01 eps=1
 [RPTDS] dev=2 itf=0 len=67 off=0:        05 01 09 02 A1 01 09 01 A1 00 05 09 19 01 29 08
-[HID  ] dev=2 itf=0 len=8 off=0:         01 00 00 00 00 00 00 00
-[HID  ] dev=2 itf=0 len=64 off=0:        21 8F F2 04 69 DD FB 01 00 00 00 01 00 00 00 00
-[HID  ] dev=2 itf=0 len=64 off=16:       00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
-[HID  ] dev=2 itf=0 len=64 off=32:       00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
-[HID  ] dev=2 itf=0 len=64 off=48:       00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+[HID]   dev=2 itf=0 len=8 off=0:         01 00 00 00 00 00 00 00
+[HID]   dev=2 itf=0 len=64 off=0:        21 8F F2 04 69 DD FB 01 00 00 00 01 00 00 00 00
+[HID]   dev=2 itf=0 len=64 off=16:       00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+[HID]   dev=2 itf=0 len=64 off=32:       00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+[HID]   dev=2 itf=0 len=64 off=48:       00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
 ```
 
 ## 构建

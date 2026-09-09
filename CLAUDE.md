@@ -52,7 +52,7 @@ tuh_task()                                      uart_output_flush(): 批量出�
 
 每行 `\r\n` 结尾。行格式权威定义见 [README.md](README.md)「输出格式」一节。格式约定：
 
-- TAG 固定 5 字符宽，不足补空格（`[%-5s]` 实现：`MOUNT`/`DEVDS`/`CFGDS`/`STRDS`/`HIDMT`/`RPTDS`/`UNHID`/`DEVRM`/`ERROR`/`DROP`/`HID`），行首列对齐。
+- TAG 定宽：`[TAG]` 紧跟 TAG 本体，其后用空格补齐到第 8 列（`TAG_COL`）再输出内容——hexdump 内用 `%*s` 补位，其余 emit 行的 TAG 均为 5 字符 + 1 空格天然对齐。
 - HEX 折行 dump 统一走 `hexdump()`：每行前缀含 `len=`（整块总长）与 `off=`（本行起始偏移），前缀用空格补齐到固定列 `HEX_COL`（40）后才输出数据，跨行数据列垂直对齐。`itf_num` 传 `-1` 省略 itf 字段（设备级描述符），报文与报告描述符传实际接口号。
 
 ## Key Files

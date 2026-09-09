@@ -80,7 +80,7 @@ void uart_output_flush(void)
             if (dropped) {
                 char buf[64];
                 int n = snprintf(buf, sizeof(buf) - 2,
-                                 "[DROP ] lost_lines=%lu\r\n",
+                                 "[DROP]  lost_lines=%lu\r\n",
                                  (unsigned long)dropped);
                 if (n > 0) uart_write_blocking(uart0, (const uint8_t *)buf, (size_t)n);
             }

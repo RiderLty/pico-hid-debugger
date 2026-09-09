@@ -50,11 +50,12 @@ static void append_hex(char **p, const uint8_t *data, uint16_t n)
     }
 }
 
-// HEX 折行 dump：TAG 固定 5 字符宽（不足补空格），每行至多 16 字节，
-// 每行前缀含 len（整块总长）与 off（本行起始偏移）。前缀用空格补齐到
-// 固定列后才输出十六进制，使跨行数据列垂直对齐（如 64 字节手柄报告）。
-// itf_num >= 0 时附带 itf= 字段（报文/报告描述符），< 0 时省略（设备级描述符）。
-// 整块数据全部转储，不截断。
+// HEX 折行 dump：[TAG] 紧跟 TAG 本体（不补在括号内），其后用空格补齐到
+// TAG_COL 再输出字段；每行至多 16 字节，前缀含 len（整块总长）与 off
+// （本行起始偏移）。前缀用空格补齐到固定列后才输出十六进制，使跨行数据列
+// 垂直对齐（如 64 字节手柄报告）。itf_num >= 0 时附带 itf= 字段（报文/
+// 报告描述符），< 0 时省略（设备级描述符）。整块数据全部转储，不截断。
+#define TAG_COL 8u    // [TAG] 之后内容（dev=...）的起始列
 #define HEX_COL 40u   // 十六进制数据起始列
 
 static void hexdump(const char *tag, uint8_t dev_addr, int itf_num,
@@ -63,17 +64,21 @@ static void hexdump(const char *tag, uint8_t dev_addr, int itf_num,
     char line[UARTO_REC_MAX];
     uint16_t off = 0;
 
+    // [TAG] 后的补位空格数，使 dev=... 从 TAG_COL 列开始（至少 1 格分隔）
+    int tag_pad = (int)TAG_COL - (int)strlen(tag) - 2;
+    if (tag_pad < 1) tag_pad = 1;
+
     while (off < len) {
         uint16_t n = len - off;
         if (n > 16u) n = 16u;
 
         int used;
         if (itf_num >= 0) {
-            used = snprintf(line, sizeof(line) - 2, "[%-5s] dev=%u itf=%u len=%u off=%u:",
-                            tag, dev_addr, (unsigned)itf_num, len, off);
+            used = snprintf(line, sizeof(line) - 2, "[%s]%*sdev=%u itf=%u len=%u off=%u:",
+                            tag, tag_pad, "", dev_addr, (unsigned)itf_num, len, off);
         } else {
-            used = snprintf(line, sizeof(line) - 2, "[%-5s] dev=%u len=%u off=%u:",
-                            tag, dev_addr, len, off);
+            used = snprintf(line, sizeof(line) - 2, "[%s]%*sdev=%u len=%u off=%u:",
+                            tag, tag_pad, "", dev_addr, len, off);
         }
         if (used < 0) return;
 
