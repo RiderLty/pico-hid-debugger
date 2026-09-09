@@ -85,6 +85,7 @@ const hintEl = $('hint');
 let port = null;                // 当前使用的 SerialPort
 let portKey = '';               // "vid:pid" 标识，localStorage 记忆
 let running = false;            // 读循环是否活跃
+let opening = false;            // openPort 并发防护（事件与看门狗可能同时触发）
 let wantConnected = false;      // 是否期望保持连接（手动断开后关闭自动重连）
 let currentReader = null;
 let lineBuf = '';               // 跨 read() 的半行缓冲
@@ -220,23 +221,30 @@ async function readLoop(p) {
 }
 
 async function openPort(p) {
-  if (running) return;
+  if (running || opening) return;
+  opening = true;
+  port = p;
   portKey = keyOf(p);
   localStorage.setItem(KEY_STORE, portKey);
+  wantConnected = true;                 // 先置位：失败后由看门狗继续重试
   setStatus('连接中…', 'wait');
-  // 首次立即 open；OS 枚举尚未就绪时短暂重试，保证"第一时间"重连
+
+  // 首次立即 open，短暂重试消化 OS 枚举未就绪；仍失败则交给看门狗
   for (let attempt = 0; ; attempt++) {
     try {
       await p.open({ baudRate: BAUD });
-      break;
+      opening = false;
+      readLoop(p);
+      return;
     } catch (err) {
-      if (attempt >= 12) { setStatus('打开失败：' + err.message, 'bad'); return; }
+      if (attempt >= 4) {
+        opening = false;
+        setStatus('重连中…（设备未就绪，自动重试）', 'wait');
+        return;
+      }
       await sleep(150);
     }
   }
-  port = p;
-  wantConnected = true;
-  readLoop(p);
 }
 
 async function closePort() {
@@ -277,12 +285,23 @@ navigator.serial?.addEventListener('disconnect', e => {
 });
 
 navigator.serial?.addEventListener('connect', e => {
-  // 仅当处于"期望连接"且当前未连接时才抢连；
-  // 记忆过设备标识时，只自动重连同一台适配器
-  if (running || !wantConnected) return;
+  // 快速通道：重枚举事件到达时立即抢连
+  if (running || opening || !wantConnected) return;
   if (portKey && keyOf(e.port) !== portKey) return;
   openPort(e.port);
 });
+
+// 重连看门狗：不依赖 connect 事件（部分平台/时序下事件不可靠）。
+// wantConnected 期间每 500ms 查一次授权端口表，记忆设备一出现立即重连。
+setInterval(async () => {
+  if (running || opening || !wantConnected) return;
+  try {
+    const ports = await navigator.serial.getPorts();
+    const target = ports.find(p => keyOf(p) === portKey) ||
+                   (ports.length === 1 ? ports[0] : null);
+    if (target) openPort(target);
+  } catch { /* getPorts 失败下轮再试 */ }
+}, 500);
 
 // ---------------------------------------------------------------- 交互杂项
 filterSel.addEventListener('change', renderAll);
