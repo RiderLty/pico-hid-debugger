@@ -11,10 +11,11 @@
  * UART0 固定在 GPIO2(TX)/GPIO3(RX)，921600bps。
  */
 
-// 波特率可经编译定义覆盖（src/CMakeLists.txt 的 UART_BAUD 缓存变量，
-// 如 cmake -DUART_BAUD=2000000），须与上位机选择值一致
+// 波特率可经编译定义覆盖（src/CMakeLists.txt 的 UART_BAUD 缓存变量）。
+// 2M @ 120MHz 系统时钟分频恰为整数（零误差），容量 200KB/s，
+// 可承载 1kHz 鼠标全量报文 + 级别 3 日志；须与上位机选择值一致
 #ifndef UARTO_BAUDRATE
-#define UARTO_BAUDRATE 921600u
+#define UARTO_BAUDRATE 2000000u
 #endif
 #define UARTO_TX_PIN   2u
 #define UARTO_RX_PIN   3u

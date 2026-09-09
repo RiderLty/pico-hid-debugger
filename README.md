@@ -4,14 +4,14 @@ Raspberry Pi Pico 2 (RP2350) USB HID 设备调试器固件。
 
 PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显示设备/配置/字符串描述符、HID 接口信息与报告描述符；运行时把设备的原始报文按行 hexdump 输出。不做任何 HID 语义解析，所见即设备原始行为。
 
-原生 USB Device 栈已完全禁用——Pico 在上位机上不再枚举为任何 USB 设备，避免 Host/Device 角色混淆；全部调试信息经硬件 UART（GPIO 2/3，921600bps）输出。
+原生 USB Device 栈已完全禁用——Pico 在上位机上不再枚举为任何 USB 设备，避免 Host/Device 角色混淆；全部调试信息经硬件 UART（GPIO 2/3，2000000bps）输出。
 
 ## 硬件
 
 | 接口 | 引脚 | 用途 |
 |------|------|------|
 | PIO-USB | GPIO 12 (D+) / GPIO 13 (D-) | 连接被调试的 USB 设备/Hub |
-| UART0 | GPIO 2 (TX) / GPIO 3 (RX) | 调试输出，921600 8N1 |
+| UART0 | GPIO 2 (TX) / GPIO 3 (RX) | 调试输出，2000000 8N1 |
 
 注意：RP2350 上 GPIO2/3 的 UART 功能在 FUNCSEL 11（`GPIO_FUNC_UART_AUX`），接线时 TX/RX 交叉连接 USB-UART 适配器。
 
@@ -79,11 +79,11 @@ make -j$(nproc)
 
 ## 测试
 
-1. USB-UART 适配器接 GPIO2(TX)/GPIO3(RX)（交叉接线），打开串口终端，波特率 921600：
+1. USB-UART 适配器接 GPIO2(TX)/GPIO3(RX)（交叉接线），打开串口终端，波特率 2000000：
 
 ```bash
 ls /dev/tty.usbserial*           # macOS
-screen /dev/tty.usbserialXXXX 921600
+screen /dev/tty.usbserialXXXX 2000000
 ```
 
 2. 被调试设备接 PIO-USB 端口（GPIO12/13，需外部 5V 供电与 D+ 1.5kΩ 上拉，或经 Hub）。插入后立即输出挂载信息与描述符 dump，随后每次报文一行。
@@ -93,7 +93,7 @@ screen /dev/tty.usbserialXXXX 921600
 ```bash
 pip install pyserial                       # 首次使用装依赖
 python3 tools/uart_monitor.py              # 自动探测串口并连接
-python3 tools/uart_monitor.py -p /dev/tty.usbserialXXXX -b 921600  # 指定串口
+python3 tools/uart_monitor.py -p /dev/tty.usbserialXXXX -b 2000000  # 指定串口
 ```
 
 运行中单键：`f` = 冻结/恢复滚动、`c` = 清屏、`q` = 退出。
@@ -116,7 +116,7 @@ python3 -m http.server   # 工程根目录运行，浏览器访问 http://localh
 src/
 ├── pico_hid_debugger.c   # 入口：双核初始化（core1=USB Host，core0=UART 输出）
 ├── hid_host_app.c/.h     # 信息采集：TinyUSB 回调、描述符抓取状态机、报文 hexdump
-├── uart_output.c/.h      # 跨核 SPSC 队列 → UART0（GPIO2/3，921600）
+├── uart_output.c/.h      # 跨核 SPSC 队列 → UART0（GPIO2/3，2000000）
 ├── tusb_log.c/.h         # TinyUSB 内部日志桥接：tu_printf 钩子 → [TUSB] 行
 ├── tusb_config.h         # TinyUSB 配置（仅 Host 栈 + 调试日志级别）
 └── CMakeLists.txt        # 构建配置
@@ -129,7 +129,7 @@ lib/
 
 ## 已知限制
 
-1. UART 无流控：921600bps 约 11.5KB/s，hexdump 使字节膨胀 3 倍，高流量设备（连续移动报文、大报告）可能超出带宽，队列满即丢行并计数，排空后以 `[DROP]` 补报。`CFG_TUSB_DEBUG=3` 时 TinyUSB 信息日志会显著加大流量。
+1. UART 无流控：2Mbaud 容量约 200KB/s。1kHz 鼠标全量输出（报文行 66B + 级别 3 的每报文 TUSB 日志约 40B ≈ 106KB/s）约占 53%；此前 921600（92KB/s）即因此溢出丢行。更高流量可用 `cmake -DUART_BAUD=` 提速（RP2350 UART 可跑 5Mbps+）。队列满即丢行并计数，排空后以 `[DROP]` 补报。
 2. 报告描述符超过 TinyUSB 枚举缓冲（512 字节）时显示 `[RPTDS] not captured`。
 3. 多配置设备只转储配置 1。
 4. 字符串描述符按 UTF-16LE 低字节转可打印 ASCII，非 ASCII 字符显示 `?`。

@@ -8,7 +8,7 @@ USB HID 设备调试器固件，运行于 **Raspberry Pi Pico 2 (RP2350)**。
 
 PIO-USB 端口（GPIO12/13）枚举插入的 USB 设备（含 Hub），挂载时经异步控制传输抓取并 dump：设备描述符、配置描述符（原始整块）、字符串描述符（语言 ID/厂商/产品/序列号）；HID 接口挂载时 dump 接口信息与报告描述符；运行时把每份 HID 报告按行 hexdump。**不做任何 HID 语义解析**——本固件是"所见即原始行为"的调试采集器。
 
-原生 USB Device 栈禁用（`CFG_TUD_ENABLED=0`）：Pico 在上位机上不枚举任何设备，输出经硬件 UART0（**GPIO2=TX / GPIO3=RX，921600bps 8N1**）。注意 RP2350 上 GPIO2/3 的 UART 复用在 FUNCSEL 11（`GPIO_FUNC_UART_AUX`），不是 RP2040 的 FUNC2。
+原生 USB Device 栈禁用（`CFG_TUD_ENABLED=0`）：Pico 在上位机上不枚举任何设备，输出经硬件 UART0（**GPIO2=TX / GPIO3=RX，2000000bps 8N1**）。注意 RP2350 上 GPIO2/3 的 UART 复用在 FUNCSEL 11（`GPIO_FUNC_UART_AUX`），不是 RP2040 的 FUNC2。
 
 ## Build
 
@@ -29,7 +29,7 @@ No test suite or linter is configured.
 **双核分工 + SPSC 队列（无 Device 栈）：**
 
 ```
-core1 (PIO-USB Host, GPIO12/13)                 core0 (UART0, GPIO2/3, 921600)
+core1 (PIO-USB Host, GPIO12/13)                 core0 (UART0, GPIO2/3, 2000000)
 ─────────────────────────────────────           ──────────────────────────────
 tuh_task()                                      uart_output_flush(): 批量出队
  └ tuh_mount_cb        [hid_host_app]              → uart_write_blocking()
@@ -61,14 +61,14 @@ tuh_task()                                      uart_output_flush(): 批量出�
 |------|------|
 | `src/pico_hid_debugger.c` | 入口：`main()`（core0：UART 初始化与输出循环）、`core1_main()`（core1：tuh 配置与任务循环） |
 | `src/hid_host_app.c/.h` | 信息采集模块：全部 tuh 回调、描述符抓取状态机（异步控制传输链）、hexdump 格式化 |
-| `src/uart_output.c/.h` | 跨核传输层：SPSC 字节块队列、UART0 初始化（GPIO2/3 @ 921600）、core0 批量写出 |
+| `src/uart_output.c/.h` | 跨核传输层：SPSC 字节块队列、UART0 初始化（GPIO2/3 @ 2000000）、core0 批量写出 |
 | `src/tusb_log.c/.h` | TinyUSB 内部日志桥接：`CFG_TUSB_DEBUG_PRINTF` 挂接 `tu_printf`，片段按行组装（core1 临界区防穿插），`[TUSB]` 头入队 |
 | `src/tusb_config.h` | TinyUSB 配置：仅 Host 栈（CFG_TUD_ENABLED=0），Host HID×16 + Hub，枚举缓冲 512，`CFG_TUSB_DEBUG=3` |
 | `src/CMakeLists.txt` | 构建目标，链接 pico_stdlib, pico_pio_usb, tinyusb_host；stdio UART/USB 显式关闭 |
 | `CMakeLists.txt` | Top-level: sets board to `pico2`, includes Pico SDK |
 | `lib/pico_pio_usb/` | Vendored PIO-USB library (sekigon-gonnoc) |
 | `tools/uart_monitor.py` | 上位机串口监视脚本（pyserial，自动探测/冻结/清屏） |
-| `index.html` | Web Serial 日志查看器：921600，`[TUSB]` 三态过滤（全部/仅/排除），授权持久化 + `connect` 事件自动重连，行缓冲按 `\n` 切行，按 TAG 着色，上限 8000 行 |
+| `index.html` | Web Serial 日志查看器：默认 2M，`[TUSB]` 三态过滤（全部/仅/排除），虚拟滚动（行上限 50000）、导出 .log、授权持久化 + `connect` 事件 + 100ms 轮询看门狗自动重连，行缓冲按 `\n` 切行，按 TAG 着色 |
 
 ## TinyUSB Configuration Notes
 
@@ -83,7 +83,7 @@ tuh_task()                                      uart_output_flush(): 批量出�
 
 ## Known Limitations
 
-1. **UART 带宽**：921600bps ≈ 11.5KB/s，hexdump 使字节膨胀 3 倍。1kHz×8B 的移动报文约占带宽一半；大报告（>30B）高频率会超载。队列满丢行计数，排空后 `[DROP ]` 补报。若需更高带宽：换更高速率（RP2350 UART 可跑 5Mbps+）或压缩输出。
+1. **UART 带宽**：2Mbaud ≈ 200KB/s（120MHz 时钟下分频恰为整数，零波特率误差）。1kHz 鼠标全量输出（报文行 + 每报文 TUSB 日志）≈ 106KB/s，占 53%。更高流量用 `cmake -DUART_BAUD=` 提速（RP2350 UART 可跑 5Mbps+）或降 `CFG_TUSB_DEBUG`。队列满丢行计数，排空后 `[DROP]` 补报。
 2. 描述符抓取与 HID 驱动自身的控制传输（报告描述符请求等）共用设备控制通道，由 TinyUSB 排队串行化；抓取失败（如设备不支持字符串）仅 `[ERROR]`/跳过，不影响报文流。
 3. 多配置设备只 dump 配置 1；字符串非 ASCII 字符显示 `?`。
 4. 枚举信息只在挂载时抓取一次，运行中不会重复查询（设备描述符/字符串不会变化，属有意为之）。

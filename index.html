@@ -58,9 +58,9 @@
   <button id="btnConnect" class="primary">连接串口</button>
   <button id="btnPick" title="重新弹出系统串口选择框">选择设备…</button>
   <select id="baud" title="波特率（须与固件一致，重连后生效）">
+    <option value="2000000" selected>2M</option>
     <option value="921600">921600</option>
     <option value="1000000">1M</option>
-    <option value="2000000">2M</option>
     <option value="3000000">3M</option>
   </select>
   <select id="filter" title="日志过滤">
@@ -377,7 +377,7 @@ chip.addEventListener('click', () => {
 // ---------------------------------------------------------------- 启动
 (async () => {
   if (!('serial' in navigator)) return;
-  baud = +(localStorage.getItem(KEY_BAUD) || 921600);
+  baud = +(localStorage.getItem(KEY_BAUD) || 2000000);
   baudSel.value = String(baud);
   portKey = localStorage.getItem(KEY_PORT) || '';
   // 页面加载即恢复连接：已授权端口不需要任何用户手势

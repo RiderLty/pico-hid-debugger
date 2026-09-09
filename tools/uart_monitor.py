@@ -11,7 +11,7 @@ pico-hid-debugger 上位机串口监视脚本。
 用法：
   python3 tools/uart_monitor.py                        # 自动探测串口
   python3 tools/uart_monitor.py -p /dev/tty.usbserialXXXX
-  python3 tools/uart_monitor.py -b 921600              # 默认 921600
+  python3 tools/uart_monitor.py -b 2000000              # 默认 2000000
 
 依赖：pip install pyserial
 """
@@ -73,8 +73,8 @@ def open_serial(port, baud):
 def main():
     ap = argparse.ArgumentParser(description="pico-hid-debugger UART 监视器")
     ap.add_argument("-p", "--port", help="串口设备路径（默认自动探测）")
-    ap.add_argument("-b", "--baud", type=int, default=921600,
-                    help="波特率（默认 921600，与固件一致）")
+    ap.add_argument("-b", "--baud", type=int, default=2000000,
+                    help="波特率（默认 2000000，与固件一致）")
     args = ap.parse_args()
 
     port = args.port or find_port()
