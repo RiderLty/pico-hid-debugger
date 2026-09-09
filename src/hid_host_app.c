@@ -50,10 +50,15 @@ static void append_hex(char **p, const uint8_t *data, uint16_t n)
     }
 }
 
-// HEX 折行 dump：首行 "[TAG] dev=%u len=%u:"，每行至多 16 字节，
-// 续行 "[TAG+] dev=%u:"。整块数据全部转储，不截断。
-static void dump_hex(const char *tag, uint8_t dev_addr,
-                     const uint8_t *data, uint16_t len)
+// HEX 折行 dump：TAG 固定 5 字符宽（不足补空格），每行至多 16 字节，
+// 每行前缀含 len（整块总长）与 off（本行起始偏移）。前缀用空格补齐到
+// 固定列后才输出十六进制，使跨行数据列垂直对齐（如 64 字节手柄报告）。
+// itf_num >= 0 时附带 itf= 字段（报文/报告描述符），< 0 时省略（设备级描述符）。
+// 整块数据全部转储，不截断。
+#define HEX_COL 40u   // 十六进制数据起始列
+
+static void hexdump(const char *tag, uint8_t dev_addr, int itf_num,
+                    const uint8_t *data, uint16_t len)
 {
     char line[UARTO_REC_MAX];
     uint16_t off = 0;
@@ -63,43 +68,22 @@ static void dump_hex(const char *tag, uint8_t dev_addr,
         if (n > 16u) n = 16u;
 
         int used;
-        if (off) {
-            used = snprintf(line, sizeof(line) - 2, "[%s+] dev=%u:", tag, dev_addr);
+        if (itf_num >= 0) {
+            used = snprintf(line, sizeof(line) - 2, "[%-5s] dev=%u itf=%u len=%u off=%u:",
+                            tag, dev_addr, (unsigned)itf_num, len, off);
         } else {
-            used = snprintf(line, sizeof(line) - 2, "[%s] dev=%u len=%u:", tag, dev_addr, len);
+            used = snprintf(line, sizeof(line) - 2, "[%-5s] dev=%u len=%u off=%u:",
+                            tag, dev_addr, len, off);
         }
         if (used < 0) return;
+
         char *p = line + used;
+        if (used < (int)HEX_COL) {
+            while (p < line + HEX_COL) *p++ = ' ';   // 补齐到固定数据列
+        } else {
+            *p++ = ' ';   // 病理超长前缀：至少留一个空格分隔
+        }
         append_hex(&p, data + off, n);
-        *p++ = '\r';
-        *p++ = '\n';
-        uart_output_send(line, (uint8_t)(p - line));
-
-        off = (uint16_t)(off + n);
-    }
-}
-
-// 报文行："[HID] dev=%u itf=%u len=%u:" + HEX，续行 "[HID+]"
-static void emit_report(uint8_t dev_addr, uint8_t itf_num,
-                        const uint8_t *report, uint16_t len)
-{
-    char line[UARTO_REC_MAX];
-    uint16_t off = 0;
-
-    while (off < len) {
-        uint16_t n = len - off;
-        if (n > 16u) n = 16u;
-
-        int used;
-        if (off) {
-            used = snprintf(line, sizeof(line) - 2, "[HID+] dev=%u itf=%u:", dev_addr, itf_num);
-        } else {
-            used = snprintf(line, sizeof(line) - 2, "[HID] dev=%u itf=%u len=%u:",
-                            dev_addr, itf_num, len);
-        }
-        if (used < 0) return;
-        char *p = line + used;
-        append_hex(&p, report + off, n);
         *p++ = '\r';
         *p++ = '\n';
         uart_output_send(line, (uint8_t)(p - line));
@@ -216,7 +200,7 @@ static void desc_xfer_cb(tuh_xfer_t *xfer)
              d->bMaxPacketSize0, d->bcdDevice, d->bNumConfigurations);
         emit("[DEVDS] dev=%u iMfg=%u iProd=%u iSer=%u",
              xfer->daddr, d->iManufacturer, d->iProduct, d->iSerialNumber);
-        dump_hex("DEVDS", xfer->daddr, st->dev_buf, (uint16_t)xfer->actual_len);
+        hexdump("DEVDS", xfer->daddr, -1, st->dev_buf, (uint16_t)xfer->actual_len);
 
         st->str_seq[0] = d->iManufacturer;
         st->str_seq[1] = d->iProduct;
@@ -236,7 +220,7 @@ static void desc_xfer_cb(tuh_xfer_t *xfer)
         emit("[CFGDS] dev=%u total=%u itfs=%u cfg=%u attr=0x%02x power=%umA",
              xfer->daddr, c->wTotalLength, c->bNumInterfaces, c->bConfigurationValue,
              c->bmAttributes, c->bMaxPower * 2u);
-        dump_hex("CFGDS", xfer->daddr, st->cfg_buf, (uint16_t)xfer->actual_len);
+        hexdump("CFGDS", xfer->daddr, -1, st->cfg_buf, (uint16_t)xfer->actual_len);
 
         st->step = DS_LANG;
         if (!tuh_descriptor_get_string(xfer->daddr, 0, 0, st->str_buf, DESC_STR_MAX,
@@ -333,7 +317,7 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
 
     // 报告描述符由 TinyUSB 枚举时抓取；超枚举缓冲时为 NULL
     if (desc_report && desc_len) {
-        dump_hex("RPTDS", dev_addr, desc_report, desc_len);
+        hexdump("RPTDS", dev_addr, (int)itf_num, desc_report, desc_len);
     } else {
         emit("[RPTDS] dev=%u itf=%u not captured (>enum buf)", dev_addr, itf_num);
     }
@@ -356,7 +340,7 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance,
                                 uint8_t const *report, uint16_t len)
 {
     if (len != 0 && instance < CFG_TUH_HID) {
-        emit_report(dev_addr, s_itf_num[instance], report, len);
+        hexdump("HID", dev_addr, (int)s_itf_num[instance], report, len);
     }
 
     if (!tuh_hid_receive_report(dev_addr, instance)) {

@@ -50,7 +50,10 @@ tuh_task()                                      uart_output_flush(): 批量出�
 
 ## 输出格式
 
-每行 `\r\n` 结尾。行格式权威定义见 [README.md](README.md)「输出格式」一节。概要：`[TAG]` 定界，TAG 为 5 字符（`MOUNT`/`DEVDS`/`CFGDS`/`STRDS`/`HIDMT`/`RPTDS`/`UNHID`/`DEVRM`/`ERROR`/`DROP`/`HID`）；HEX 折行 dump 首行带 `len=`，续行以 `[TAG+]` 开头；报文行 `[HID] dev= itf= len=:`，续行 `[HID+]`。
+每行 `\r\n` 结尾。行格式权威定义见 [README.md](README.md)「输出格式」一节。格式约定：
+
+- TAG 固定 5 字符宽，不足补空格（`[%-5s]` 实现：`MOUNT`/`DEVDS`/`CFGDS`/`STRDS`/`HIDMT`/`RPTDS`/`UNHID`/`DEVRM`/`ERROR`/`DROP`/`HID`），行首列对齐。
+- HEX 折行 dump 统一走 `hexdump()`：每行前缀含 `len=`（整块总长）与 `off=`（本行起始偏移），前缀用空格补齐到固定列 `HEX_COL`（40）后才输出数据，跨行数据列垂直对齐。`itf_num` 传 `-1` 省略 itf 字段（设备级描述符），报文与报告描述符传实际接口号。
 
 ## Key Files
 
@@ -86,4 +89,4 @@ tuh_task()                                      uart_output_flush(): 批量出�
 - All source comments and commit messages are in **Chinese**.
 - Compiler flags: `-Wall -Wextra` with memory usage reporting via `--print-memory-usage`.
 - The `lib/pico_pio_usb/` directory is vendored — edit with caution, as it's a third-party library.
-- 行格式变更需同步更新 README「输出格式」表与 `tools/uart_monitor.py` 的高亮规则。
+- 行格式变更需同步更新 README「输出格式」表（`tools/uart_monitor.py` 对行内容透明，无格式依赖）。

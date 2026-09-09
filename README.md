@@ -17,41 +17,48 @@ PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显
 
 ## 输出格式
 
-每行 `\r\n` 结尾，`[TAG]` 定界，HEX 部分 16 字节一行折行：
+每行 `\r\n` 结尾，`[TAG]` 定界。格式约定：
+
+- **TAG 固定 5 字符宽**，不足用空格补齐（`[HID  ]`、`[DROP ]`、`[MOUNT]`），所有行首列对齐；
+- **HEX 转储行**（`DEVDS`/`CFGDS`/`RPTDS`/`HID`）前缀含 `len=`（整块总长）与 `off=`（本行起始偏移），前缀用空格补齐到**固定第 40 列**后才输出数据，每行 16 字节——超长报文（如 DS5 手柄 64 字节报告）跨行数据列严格垂直对齐。
 
 | 行格式 | 含义 |
 |--------|------|
 | `[MOUNT] dev=%u vid=%04x pid=%04x` | 设备枚举完成（含 hub 设备自身） |
 | `[DEVDS] dev=%u vid=... bcdUSB=... cls=.. pkt0=... cfgs=...` | 设备描述符关键字段 |
-| `[DEVDS] dev=%u len=18: <hex>` | 设备描述符原始转储 |
+| `[DEVDS] dev=%u len=18 off=..: <hex>` | 设备描述符原始转储 |
 | `[CFGDS] dev=%u total=%u itfs=%u cfg=%u attr=0x%02x power=%umA` | 配置描述符关键字段 |
-| `[CFGDS] dev=%u len=%u: <hex>` | 配置描述符原始转储（含全部接口/端点/HID 描述符） |
+| `[CFGDS] dev=%u len=%u off=..: <hex>` | 配置描述符原始转储（含全部接口/端点/HID 描述符） |
 | `[STRDS] dev=%u langid=0x%04x` | 支持的语言 ID |
 | `[STRDS] dev=%u Mfg(1)="..." / Prod(2)="..." / Ser(3)="..."` | 字符串描述符（UTF-16 转可打印 ASCII） |
 | `[HIDMT] dev=%u vid=%04x pid=%04x itf=%u proto=%s cls=%02x sub=%02x eps=%u` | HID 接口挂载（proto: None/Keyboard/Mouse） |
-| `[RPTDS] dev=%u len=%u: <hex>` | HID 报告描述符原始转储 |
-| `[HID] dev=%u itf=%u len=%u: <hex>` | **原始报文**（每份报告一行起，超 16 字节折行，续行 `[HID+]`） |
+| `[RPTDS] dev=%u itf=%u len=%u off=..: <hex>` | HID 报告描述符原始转储 |
+| `[HID  ] dev=%u itf=%u len=%u off=%u: <hex>` | **原始报文**（超 16 字节折行，`off=` 递增标注行内偏移） |
 | `[UNHID] dev=%u itf=%u` | HID 接口拔出 |
 | `[DEVRM] dev=%u` | 设备移除 |
 | `[ERROR] dev=%u ...` | 描述符抓取失败 / 报告订阅失败等 |
 | `[DROP ] lost_lines=%lu` | UART 队列溢出丢弃量补报 |
 
-挂载时序示例：
+挂载时序示例（HEX 数据列全部对齐在第 40 列）：
 
 ```
 [MOUNT] dev=2 vid=046d pid=c52b
 [DEVDS] dev=2 vid=046d pid=c52b bcdUSB=0210 cls=00/00/00 pkt0=64 bcdDev=2700 cfgs=1
 [DEVDS] dev=2 iMfg=1 iProd=2 iSer=3
-[DEVDS] dev=2 len=18: 12 01 10 02 00 00 00 40 6D 04 2B C5 00 27 01 02 03 01
+[DEVDS] dev=2 len=18 off=0:              12 01 10 02 00 00 00 40 6D 04 2B C5 00 27 01 02
+[DEVDS] dev=2 len=18 off=16:             03 01
 [CFGDS] dev=2 total=59 itfs=1 cfg=1 attr=0xA0 power=50mA
-[CFGDS] dev=2 len=59: 09 02 3B 00 01 01 00 A0 FA 09 04 00 00 01 03 01 01 00 ...
+[CFGDS] dev=2 len=59 off=0:              09 02 3B 00 01 01 00 A0 FA 09 04 00 00 01 03 01
 [STRDS] dev=2 langid=0x0409
 [STRDS] dev=2 Mfg(1)="Logitech"
 [STRDS] dev=2 Prod(2)="USB Receiver"
 [HIDMT] dev=2 vid=046d pid=c52b itf=0 proto=Mouse cls=03 sub=01 eps=1
-[RPTDS] dev=2 len=67: 05 01 09 02 A1 01 09 01 A1 00 05 09 19 01 29 08 ...
-[HID] dev=2 itf=0 len=8: 01 00 00 00 00 00 00 00
-[HID] dev=2 itf=0 len=8: 01 FE FF 00 00 00 00 00
+[RPTDS] dev=2 itf=0 len=67 off=0:        05 01 09 02 A1 01 09 01 A1 00 05 09 19 01 29 08
+[HID  ] dev=2 itf=0 len=8 off=0:         01 00 00 00 00 00 00 00
+[HID  ] dev=2 itf=0 len=64 off=0:        21 8F F2 04 69 DD FB 01 00 00 00 01 00 00 00 00
+[HID  ] dev=2 itf=0 len=64 off=16:       00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+[HID  ] dev=2 itf=0 len=64 off=32:       00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+[HID  ] dev=2 itf=0 len=64 off=48:       00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
 ```
 
 ## 构建
