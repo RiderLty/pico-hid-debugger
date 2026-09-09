@@ -11,7 +11,11 @@
  * UART0 固定在 GPIO2(TX)/GPIO3(RX)，921600bps。
  */
 
+// 波特率可经编译定义覆盖（src/CMakeLists.txt 的 UART_BAUD 缓存变量，
+// 如 cmake -DUART_BAUD=2000000），须与上位机选择值一致
+#ifndef UARTO_BAUDRATE
 #define UARTO_BAUDRATE 921600u
+#endif
 #define UARTO_TX_PIN   2u
 #define UARTO_RX_PIN   3u
 

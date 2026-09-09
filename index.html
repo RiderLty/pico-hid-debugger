@@ -25,22 +25,24 @@
   button:disabled { opacity: .45; cursor: not-allowed; }
   button.primary { background: #238636; border-color: #2ea043; color: #fff; }
   button.primary:hover:not(:disabled) { background: #2ea043; }
-  label.chk { display: flex; align-items: center; gap: 4px; font-size: 13px; cursor: pointer; }
   #status { font-size: 12px; padding: 3px 10px; border-radius: 10px; background: #30363d; }
   #status.ok   { background: #12351c; color: #7ee787; }
   #status.bad  { background: #43202a; color: #ffa198; }
   #status.wait { background: #3a2d12; color: #e3b341; }
   #count { margin-left: auto; font-size: 12px; color: #8b949e; }
   #logwrap { position: relative; flex: 1; min-height: 0; }
+  /* 虚拟滚动：行高固定 18px，超宽行横向滚动（不换行） */
   #log {
-    height: 100%; overflow-y: auto; margin: 0; padding: 6px 10px;
-    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    position: relative; height: 100%; overflow: auto;
+    font: 12px/18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
-  #log div { white-space: pre-wrap; word-break: break-all; min-height: 18px; }
-  #log .t-tusb  { color: #8b949e; }                 /* TinyUSB 内部日志：灰 */
-  #log .t-hid   { color: #a5d6ff; }                 /* 报文：蓝 */
-  #log .t-mount { color: #7ee787; }                 /* 挂载/拔出：绿 */
-  #log .t-err   { color: #ffa198; }                 /* 错误/丢弃：红 */
+  #padTop, #padBot { width: 1px; }
+  #rows { width: max-content; min-width: 100%; }
+  #rows div { height: 18px; line-height: 18px; white-space: pre; }
+  #rows .t-tusb  { color: #8b949e; }                 /* TinyUSB 内部日志：灰 */
+  #rows .t-hid   { color: #a5d6ff; }                 /* 报文：蓝 */
+  #rows .t-mount { color: #7ee787; }                 /* 挂载/拔出：绿 */
+  #rows .t-err   { color: #ffa198; }                 /* 错误/丢弃：红 */
   #hint { padding: 4px 12px 10px; color: #e3b341; font-size: 13px; }
   #bottomChip {
     position: absolute; right: 16px; bottom: 14px; display: none;
@@ -55,31 +57,45 @@
   <span id="status">未连接</span>
   <button id="btnConnect" class="primary">连接串口</button>
   <button id="btnPick" title="重新弹出系统串口选择框">选择设备…</button>
+  <select id="baud" title="波特率（须与固件一致，重连后生效）">
+    <option value="921600">921600</option>
+    <option value="1000000">1M</option>
+    <option value="2000000">2M</option>
+    <option value="3000000">3M</option>
+  </select>
   <select id="filter" title="日志过滤">
     <option value="all">全部日志</option>
     <option value="tusb">仅 [TUSB]</option>
     <option value="no-tusb">排除 [TUSB]</option>
   </select>
-  <label class="chk"><input type="checkbox" id="autoscroll" checked> 自动滚动</label>
+  <button id="btnExport" title="导出当前过滤视图为 .log 文件">导出 .log</button>
   <button id="btnClear">清屏</button>
   <span id="count">0 行</span>
 </header>
 <div id="hint" style="display:none"></div>
 <div id="logwrap">
-  <div id="log"></div>
+  <div id="log">
+    <div id="padTop"></div>
+    <div id="rows"></div>
+    <div id="padBot"></div>
+  </div>
   <button id="bottomChip">↓ 回到底部</button>
 </div>
 
 <script>
 'use strict';
-const BAUD = 921600;            // 与固件 UART0 一致
-const MAX_LINES = 8000;         // 内存与 DOM 上限（超出丢最旧）
-const KEY_STORE = 'pico-hid-debugger.portKey';
+const MAX_LINES = 50000;        // 模型上限（虚拟滚动，DOM 只渲染可见窗口）
+const ROW_H = 18;               // 单行像素高，须与 CSS 一致
+const OVERSCAN = 20;            // 视口上下各多渲染的行数
+const KEY_PORT = 'pico-hid-debugger.portKey';
+const KEY_BAUD = 'pico-hid-debugger.baud';
 
 const $ = id => document.getElementById(id);
-const logEl = $('log'), statusEl = $('status'), countEl = $('count');
+const logEl = $('log'), rowsEl = $('rows'), padTop = $('padTop'), padBot = $('padBot');
+const statusEl = $('status'), countEl = $('count');
 const btnConnect = $('btnConnect'), btnPick = $('btnPick'), btnClear = $('btnClear');
-const filterSel = $('filter'), autoChk = $('autoscroll'), chip = $('bottomChip');
+const btnExport = $('btnExport'), filterSel = $('filter'), baudSel = $('baud');
+const autoChk = null, chip = $('bottomChip');
 const hintEl = $('hint');
 
 let port = null;                // 当前使用的 SerialPort
@@ -87,11 +103,14 @@ let portKey = '';               // "vid:pid" 标识，localStorage 记忆
 let running = false;            // 读循环是否活跃
 let opening = false;            // openPort 并发防护（事件与看门狗可能同时触发）
 let wantConnected = false;      // 是否期望保持连接（手动断开后关闭自动重连）
+let baud = 921600;
 let currentReader = null;
 let lineBuf = '';               // 跨 read() 的半行缓冲
-let allLines = [];              // [{cls, text}]，过滤切换时全量重渲染
-let pending = [];               // 待 rAF 批量上屏的行
-let flushScheduled = false;
+let allLines = [];              // 全量模型：[{cls, text}]，导出与过滤切换的数据源
+let viewLines = [];             // 当前过滤视图（虚拟滚动的渲染源）
+let follow = true;              // 跟随滚动（贴底）
+let missCount = 0;              // 非跟随期间新到的行数
+let needRender = false, renderScheduled = false;
 
 // ---------------------------------------------------------------- 环境检查
 if (!('serial' in navigator)) {
@@ -126,52 +145,57 @@ const passFilter = cls =>
   filterSel.value === 'all' ? true :
   filterSel.value === 'tusb' ? cls === 't-tusb' : cls !== 't-tusb';
 
-// ---------------------------------------------------------------- 上屏
+// ---------------------------------------------------------------- 虚拟滚动渲染
+function scheduleRender() {
+  if (renderScheduled) return;
+  renderScheduled = true;
+  requestAnimationFrame(() => { renderScheduled = false; renderWindow(); });
+}
+
+function renderWindow() {
+  const total = viewLines.length;
+  if (follow && total) logEl.scrollTop = total * ROW_H;   // 贴底跟随
+
+  const vh = logEl.clientHeight, st = logEl.scrollTop;
+  const start = Math.max(0, Math.floor(st / ROW_H) - OVERSCAN);
+  const end = Math.min(total, Math.ceil((st + vh) / ROW_H) + OVERSCAN);
+
+  const frag = document.createDocumentFragment();
+  for (let i = start; i < end; i++) {
+    const div = document.createElement('div');
+    div.className = viewLines[i].cls;
+    div.textContent = viewLines[i].text;      // textContent 防注入
+    frag.appendChild(div);
+  }
+  rowsEl.textContent = '';
+  rowsEl.appendChild(frag);
+  padTop.style.height = (start * ROW_H) + 'px';
+  padBot.style.height = ((total - end) * ROW_H) + 'px';
+  countEl.textContent = total + ' 行';
+}
+
 function appendLine(text) {
   const cls = classify(text);
   allLines.push({ cls, text });
   if (allLines.length > MAX_LINES) allLines.shift();
-  if (!passFilter(cls)) return;
-  pending.push({ cls, text });
-  scheduleFlush();
-}
-
-function scheduleFlush() {
-  if (flushScheduled) return;
-  flushScheduled = true;
-  requestAnimationFrame(flush);
-}
-
-function flush() {
-  flushScheduled = false;
-  if (!pending.length) return;
-  const frag = document.createDocumentFragment();
-  for (const { cls, text } of pending) {
-    const div = document.createElement('div');
-    div.className = cls;
-    div.textContent = text;          // textContent 防注入
-    frag.appendChild(div);
+  if (passFilter(cls)) {
+    viewLines.push(allLines[allLines.length - 1]);
+    if (viewLines.length > MAX_LINES) viewLines.shift();
+    if (follow) scheduleRender();
+    else { missCount++; chip.textContent = '↓ 回到底部（+' + missCount + '）'; }
   }
-  pending = [];
-  logEl.appendChild(frag);
-  while (logEl.children.length > MAX_LINES) logEl.removeChild(logEl.firstChild);
-  if (autoChk.checked) logEl.scrollTop = logEl.scrollHeight;
-  countEl.textContent = allLines.length + ' 行';
+  if (allLines.length === MAX_LINES || viewLines.length === MAX_LINES) {
+    // 上限截断后行号整体偏移，直接重算窗口
+    scheduleRender();
+  }
 }
 
-function renderAll() {               // 过滤模式切换：全量重渲染
-  pending = [];
-  logEl.textContent = '';
-  const frag = document.createDocumentFragment();
-  for (const { cls, text } of allLines) {
-    if (!passFilter(cls)) continue;
-    const div = document.createElement('div');
-    div.className = cls;
-    div.textContent = text;
-    frag.appendChild(div);
-  }
-  logEl.appendChild(frag);
-  if (autoChk.checked) logEl.scrollTop = logEl.scrollHeight;
+function rebuildView() {
+  viewLines = filterSel.value === 'all'
+    ? allLines.slice()
+    : allLines.filter(l => passFilter(l.cls));
+  follow = true; missCount = 0; chip.style.display = 'none';
+  scheduleRender();
 }
 
 // ---------------------------------------------------------------- 字节流 → 行
@@ -191,7 +215,7 @@ function handleBytes(value) {
 async function readLoop(p) {
   running = true;
   lineBuf = '';
-  setStatus('已连接 ' + keyOf(p), 'ok');
+  setStatus('已连接 ' + keyOf(p) + ' @ ' + baud, 'ok');
   btnConnect.textContent = '断开';
 
   while (running && p.readable) {
@@ -225,14 +249,14 @@ async function openPort(p) {
   opening = true;
   port = p;
   portKey = keyOf(p);
-  localStorage.setItem(KEY_STORE, portKey);
+  localStorage.setItem(KEY_PORT, portKey);
   wantConnected = true;                 // 先置位：失败后由看门狗继续重试
   setStatus('连接中…', 'wait');
 
   // 首次立即 open，短暂重试消化 OS 枚举未就绪；仍失败则交给看门狗
   for (let attempt = 0; ; attempt++) {
     try {
-      await p.open({ baudRate: BAUD });
+      await p.open({ baudRate: baud });
       opening = false;
       readLoop(p);
       return;
@@ -275,9 +299,8 @@ async function pickPort() {
   } catch { /* 用户取消 */ }
 }
 
-// 断开/重连事件：核心自动重连逻辑。
-// 授权持久化（requestPort 一次即可），重插设备触发 connect 后
-// 直接 open，全程无需用户手势。
+// 断开/重连事件：快速通道。授权持久化（requestPort 一次即可），
+// 设备重插触发 connect 后直接 open，全程无需用户手势。
 navigator.serial?.addEventListener('disconnect', e => {
   if (e.port !== port) return;
   running = false;                       // 读循环随即报错退出
@@ -285,14 +308,13 @@ navigator.serial?.addEventListener('disconnect', e => {
 });
 
 navigator.serial?.addEventListener('connect', e => {
-  // 快速通道：重枚举事件到达时立即抢连
   if (running || opening || !wantConnected) return;
   if (portKey && keyOf(e.port) !== portKey) return;
   openPort(e.port);
 });
 
 // 重连看门狗：不依赖 connect 事件（部分平台/时序下事件不可靠）。
-// wantConnected 期间每 500ms 查一次授权端口表，记忆设备一出现立即重连。
+// wantConnected 期间每 100ms 查一次授权端口表，记忆设备一出现立即重连。
 setInterval(async () => {
   if (running || opening || !wantConnected) return;
   try {
@@ -301,37 +323,67 @@ setInterval(async () => {
                    (ports.length === 1 ? ports[0] : null);
     if (target) openPort(target);
   } catch { /* getPorts 失败下轮再试 */ }
-}, 500);
+}, 100);
 
 // ---------------------------------------------------------------- 交互杂项
-filterSel.addEventListener('change', renderAll);
+filterSel.addEventListener('change', rebuildView);
 
-btnClear.addEventListener('click', () => { allLines = []; pending = []; logEl.textContent = ''; countEl.textContent = '0 行'; });
+baudSel.addEventListener('change', () => {
+  baud = +baudSel.value;
+  localStorage.setItem(KEY_BAUD, baud);
+});
 
-autoChk.addEventListener('change', () => {
-  if (autoChk.checked) { logEl.scrollTop = logEl.scrollHeight; chip.style.display = 'none'; }
+btnClear.addEventListener('click', () => {
+  allLines = []; viewLines = []; lineBuf = '';
+  rowsEl.textContent = ''; padTop.style.height = '0'; padBot.style.height = '0';
+  countEl.textContent = '0 行';
+});
+
+// 导出当前过滤视图为 .log（\r\n 行尾，与固件输出一致）
+btnExport.addEventListener('click', () => {
+  if (!viewLines.length) return;
+  const text = viewLines.map(l => l.text).join('\r\n') + '\r\n';
+  const blob = new Blob([text], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const d = new Date(), pad = n => String(n).padStart(2, '0');
+  a.href = url;
+  a.download = 'hid-debugger-' + d.getFullYear() + pad(d.getMonth() + 1) +
+    pad(d.getDate()) + '-' + pad(d.getHours()) + pad(d.getMinutes()) +
+    pad(d.getSeconds()) + '.log';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
 });
 
 logEl.addEventListener('scroll', () => {
-  const atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 40;
-  if (!atBottom && autoChk.checked) autoChk.checked = false;
-  chip.style.display = atBottom ? 'none' : 'block';
+  const total = viewLines.length;
+  const atBottom = total === 0 ||
+    logEl.scrollTop + logEl.clientHeight >= total * ROW_H - ROW_H;
+  if (atBottom) {
+    if (!follow) { follow = true; chip.style.display = 'none'; missCount = 0; scheduleRender(); }
+  } else if (follow) {
+    follow = false;
+    chip.style.display = 'block';
+  }
+  scheduleRender();
 });
 
 chip.addEventListener('click', () => {
-  autoChk.checked = true;
+  follow = true; missCount = 0;
   chip.style.display = 'none';
-  logEl.scrollTop = logEl.scrollHeight;
+  scheduleRender();
 });
 
 // ---------------------------------------------------------------- 启动
 (async () => {
   if (!('serial' in navigator)) return;
-  portKey = localStorage.getItem(KEY_STORE) || '';
+  baud = +(localStorage.getItem(KEY_BAUD) || 921600);
+  baudSel.value = String(baud);
+  portKey = localStorage.getItem(KEY_PORT) || '';
   // 页面加载即恢复连接：已授权端口不需要任何用户手势
   const ports = await navigator.serial.getPorts();
   if (!ports.length) return;
-  let target = ports.find(p => keyOf(p) === portKey) || (ports.length === 1 ? ports[0] : null);
+  const target = ports.find(p => keyOf(p) === portKey) || (ports.length === 1 ? ports[0] : null);
   if (target) openPort(target);
 })();
 </script>

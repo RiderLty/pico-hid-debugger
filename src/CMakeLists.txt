@@ -1,6 +1,13 @@
 set(target_name pico-hid-debugger)
 add_executable(${target_name})
 
+# UART0 波特率可编译期覆盖（默认 921600；921600 带宽约 92KB/s，
+# 1kHz 鼠标全量日志建议 2M/3M，须与上位机选择一致且适配器支持）
+set(UART_BAUD "" CACHE STRING "UART0 baudrate override, e.g. 2000000")
+if(UART_BAUD)
+  target_compile_definitions(${target_name} PRIVATE UARTO_BAUDRATE=${UART_BAUD})
+endif()
+
 target_sources(${target_name} PRIVATE
  pico_hid_debugger.c
  hid_host_app.c
