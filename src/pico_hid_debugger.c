@@ -39,12 +39,16 @@
 #include "tusb.h"
 
 #include "uart_output.h"
+#include "tusb_log.h"
 
 /*------------- 主程序 -------------*/
 
 // core1: 处理 USB Host 事件
 void core1_main() {
   sleep_ms(10);
+
+  // TinyUSB 日志桥接先于 tuh_init 就绪：最早一条日志出现在栈初始化期间
+  tusb_log_init();
 
   // 通过 tuh_configure() 将 PIO 配置传递给 Host 栈
   // 注意: tuh_configure() 必须在 tuh_init() 之前调用

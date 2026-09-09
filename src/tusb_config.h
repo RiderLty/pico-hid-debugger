@@ -30,6 +30,10 @@
  extern "C" {
 #endif
 
+// 原型随 tusb_config.h 进入所有 TinyUSB 翻译单元，
+// 使 CFG_TUSB_DEBUG_PRINTF 的宏替换点都能拿到声明
+#include "tusb_log.h"
+
 //--------------------------------------------------------------------
 // COMMON CONFIGURATION
 //--------------------------------------------------------------------
@@ -44,8 +48,13 @@
 #define CFG_TUH_ENABLED     1
 #define CFG_TUH_RPI_PIO_USB 1
 
-// CFG_TUSB_DEBUG is defined by compiler in DEBUG build
-// #define CFG_TUSB_DEBUG           0
+// TinyUSB 内部日志级别：1=错误 2=警告+错误（含枚举过程） 3=信息（最啰嗦）。
+// 日志经 CFG_TUSB_DEBUG_PRINTF 挂接的 tusb_log_printf() 按行组装，
+// 以 [TUSB] 头从 UART 输出；级别 3 在高流量设备下会挤占带宽，按需调低
+#define CFG_TUSB_DEBUG           2
+
+// 把 TinyUSB 的 tu_printf 重定向到本工程的日志桥接（src/tusb_log.c）
+#define CFG_TUSB_DEBUG_PRINTF    tusb_log_printf
 
 /* USB DMA on some MCUs can only access a specific SRAM region with restriction on alignment.
  * Tinyusb use follows macros to declare transferring memory so that they can be put

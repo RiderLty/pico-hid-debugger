@@ -38,6 +38,7 @@ PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显
 | `[DEVRM] dev=%u` | 设备移除 |
 | `[ERROR] dev=%u ...` | 描述符抓取失败 / 报告订阅失败等 |
 | `[DROP]  lost_lines=%lu` | UART 队列溢出丢弃量补报 |
+| `[TUSB] <TinyUSB 内部日志>` | TinyUSB 栈日志（枚举过程/传输错误等，级别见 `tusb_config.h` 的 `CFG_TUSB_DEBUG`，1=错误 2=+警告 3=+信息），上位机按 `[TUSB]` 头即可单独筛选 |
 
 挂载时序示例（内容列对齐在第 8 列，HEX 数据列对齐在第 40 列）：
 
@@ -104,7 +105,8 @@ src/
 ├── pico_hid_debugger.c   # 入口：双核初始化（core1=USB Host，core0=UART 输出）
 ├── hid_host_app.c/.h     # 信息采集：TinyUSB 回调、描述符抓取状态机、报文 hexdump
 ├── uart_output.c/.h      # 跨核 SPSC 队列 → UART0（GPIO2/3，921600）
-├── tusb_config.h         # TinyUSB 配置（仅 Host 栈）
+├── tusb_log.c/.h         # TinyUSB 内部日志桥接：tu_printf 钩子 → [TUSB] 行
+├── tusb_config.h         # TinyUSB 配置（仅 Host 栈 + 调试日志级别）
 └── CMakeLists.txt        # 构建配置
 tools/
 └── uart_monitor.py       # 上位机串口监视脚本
@@ -114,7 +116,7 @@ lib/
 
 ## 已知限制
 
-1. UART 无流控：921600bps 约 11.5KB/s，高流量设备（连续移动报文、大报告）可能超出带宽，队列满即丢行并计数，排空后以 `[DROP ]` 补报。
+1. UART 无流控：921600bps 约 11.5KB/s，hexdump 使字节膨胀 3 倍，高流量设备（连续移动报文、大报告）可能超出带宽，队列满即丢行并计数，排空后以 `[DROP]` 补报。`CFG_TUSB_DEBUG=3` 时 TinyUSB 信息日志会显著加大流量。
 2. 报告描述符超过 TinyUSB 枚举缓冲（512 字节）时显示 `[RPTDS] not captured`。
 3. 多配置设备只转储配置 1。
 4. 字符串描述符按 UTF-16LE 低字节转可打印 ASCII，非 ASCII 字符显示 `?`。

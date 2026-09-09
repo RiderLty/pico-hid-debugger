@@ -5,6 +5,7 @@ target_sources(${target_name} PRIVATE
  pico_hid_debugger.c
  hid_host_app.c
  uart_output.c
+ tusb_log.c
  ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/hcd_pio_usb.c
  )
 
