@@ -4,19 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-USB HID Host → CDC 串口桥固件，运行于 **Raspberry Pi Pico 2 (RP2350)**。
+USB HID 设备调试器固件，运行于 **Raspberry Pi Pico 2 (RP2350)**。
 
-PIO-USB 端口连接的键盘/鼠标报文被解析成语义事件，按运行时选择的目的地输出：默认转发给原生 USB 上**模拟的 HID 键盘+鼠标**（Pico 成为硬件输入代理），也可经 CDC 串口（文本/二进制格式）输出到上位机；无法识别的 HID 设备（手柄、厂商自定义等）在串口模式回退输出原始报文，设备模式丢弃。
+PIO-USB 端口（GPIO12/13）枚举插入的 USB 设备（含 Hub），挂载时经异步控制传输抓取并 dump：设备描述符、配置描述符（原始整块）、字符串描述符（语言 ID/厂商/产品/序列号）；HID 接口挂载时 dump 接口信息与报告描述符；运行时把每份 HID 报告按行 hexdump。**不做任何 HID 语义解析**——本固件是"所见即原始行为"的调试采集器。
 
-支持两种输出目的地，**运行时可切**（上位机经 CDC 下发单字符命令）：
-- **设备转发模式**（`'D'`，开机默认）：解析后的事件直接写入原生 USB 上模拟的 HID 键盘+鼠标——Pico 成为硬件输入代理
-- **串口输出模式**（`'S'`）：事件经 CDC 串口输出到上位机，格式二选一：
-  - **文本**（`'T'`）：core_input 风格的可读事件行
-  - **二进制**（`'B'`）：0x55 0xAA 帧头定界的紧凑帧
-
-另有 Mac 模式修饰键交换开关（`'M'` 开启 / `'W'` 关闭，**开机默认开启**）：在 `hid_output_keyboard()` 单点完成 LALT↔LGUI、RALT↔RGUI 对调（Ctrl 不变）后再路由，作用于所有输出。
-
-串口与模拟键鼠互斥，同一时刻只有一个目的地。
+原生 USB Device 栈禁用（`CFG_TUD_ENABLED=0`）：Pico 在上位机上不枚举任何设备，输出经硬件 UART0（**GPIO2=TX / GPIO3=RX，921600bps 8N1**）。注意 RP2350 上 GPIO2/3 的 UART 复用在 FUNCSEL 11（`GPIO_FUNC_UART_AUX`），不是 RP2040 的 FUNC2。
 
 ## Build
 
@@ -34,108 +26,64 @@ No test suite or linter is configured.
 
 ## Architecture
 
-**三层结构 + 双核双 USB 栈：**
+**双核分工 + SPSC 队列（无 Device 栈）：**
 
 ```
-core1 (PIO-USB Host, GPIO12/13)                 core0 (原生USB Device = CDC+模拟键鼠)
-─────────────────────────────────────           ─────────────────────────────────────
-tuh_task()                                      tud_task()
- └ tuh_hid_*_cb        [hid_host_app]           cdc_output_flush(): 按 kind 分发出队记录
-     │ 解析(键盘原始/鼠标归一化/其他原始)              ├ CDC数据 → tud_cdc_write
-     ▼                                              └ HID报文 → tud_hid_n_report(键盘/鼠标)
-hid_output 中间层（目的地变量 + 串口格式变量，均 static 可运行时切）
- ├ 目的地=设备 → out_device  键盘8B原样 / 鼠标6B归一化（挂载等元事件丢弃）
- └ 目的地=串口 ├ out_text   文本行（含按键边沿检测，拔出补发松开）
-               └ out_binary 二进制帧（无边沿检测，边沿由上位机比对）
-     ▼ 统一经 cdc_output SPSC 字节块队列（记录带 kind 标签，critical_section 保护）→ core0 写出
+core1 (PIO-USB Host, GPIO12/13)                 core0 (UART0, GPIO2/3, 921600)
+─────────────────────────────────────           ──────────────────────────────
+tuh_task()                                      uart_output_flush(): 批量出队
+ └ tuh_mount_cb        [hid_host_app]              → uart_write_blocking()
+     │ 描述符抓取状态机（异步控制传输链）
+     │   DEV → CFG → LANG → Mfg → Prod → Ser
+     ├ tuh_hid_mount_cb → itf 信息 + 报告描述符 dump + 订阅报文
+     ├ tuh_hid_report_received_cb → 报文 hexdump
+     ▼ 格式化文本行（emit / dump_hex）→ uart_output_send() 入队
+        SPSC 字节块队列（critical_section 保护，core1 写 core0 读）
 ```
 
 关键约束：
-- 所有 `tud_cdc_*` 与 `tud_hid_*` 调用只允许出现在 core0（flush 分发、CDC RX 命令）。旧固件双核直写 Device FIFO 是竞态 bug，勿回退。
-- `cdc_output_init()` 必须在 `multicore_launch_core1()` 之前调用（自旋锁先于生产者就绪）。
-- 目的地/格式都是 static 变量（非宏）：core0 的 CDC RX 命令写入，core1 转发时原子读取。
-- 边沿检测语义只在文本模式存在（out_text 内按 instance 分槽）；二进制与设备模式直接发状态，由接收方比对。
+- 所有 UART 写操作只允许出现在 core0 的 `uart_output_flush()`；core1 只做格式化与入队，消除并发写 UART。
+- `uart_output_init()`（UART + 队列 + 临界区）必须在 `multicore_launch_core1()` 之前调用：生产者随时可能入队。
+- 系统时钟必须为 12MHz 整数倍（当前 120MHz），PIO-USB 时序依赖。
+- 描述符抓取是**异步**控制传输链（tuh_descriptor_get_* 完成回调里发起下一步）；状态按 dev_addr 分槽（`desc_state_t`）。设备拔出时 `tuh_umount_cb` 将 step 置 IDLE，迟到的完成回调据此丢弃。
+- HID 报文回调里先输出再 `tuh_hid_receive_report()` 重新订阅，报文流才持续。
 
 ## 输出格式
 
-### 文本模式（默认）
-
-每行以 `\r\n` 结尾：
-
-| 行格式 | 含义 |
-|--------|------|
-| `[MOUNT ] vid=%04x pid=%04x dev=%u itf=%u proto=%s` | 设备挂载 |
-| `[UMOUNT] vid=%04x pid=%04x dev=%u itf=%u` | 设备拔出 |
-| `KEY:%02X DN\|UP [名称]` | 键盘按键边沿；修饰键 E0-E7 附名称（如 `KEY:E0 DN LCTRL`） |
-| `MOUSE:DX=%+d DY=%+d WH=%+d BTN=%s` | 鼠标移动帧（BTN= 当前按住的键：`---` / `L` / `L|R` …） |
-| `MOUSE:BTN:%c DN\|UP` | 鼠标按键边沿（L/R/M/B/F/位号5-7） |
-| `HID:[A1 02 3C FF]` | 未识别设备原始 HEX 兜底（超 20 字节截断为 `.. +N` 标注剩余长度） |
-| `[DROP ] lost_events=%lu` | 行队列溢出的补报（排空后一次性发出） |
-| `[ERROR ] %s` | 报告接收请求失败等错误 |
-
-### 二进制模式
-
-帧格式见 `src/hid_output.h` 头部注释（权威定义）。概要：解析规则按 type 二分——键盘/鼠标为紧凑帧 `55 AA | len(u8) | type | payload`；其余类型在 type 后跟来源身份（PID u16le、VID u16le、port u8=dev_addr）再跟 payload。type：0x01 键盘原始报文（紧凑）、0x02 鼠标归一化帧（buttons u8, wheel i8, x i16le, y i16le 共 6B，紧凑）、0x00 其他 HID 设备原始报文（带身份）、0x10/0x11 挂载/拔出、0x12 溢出补报、0x13 错误。
+每行 `\r\n` 结尾。行格式权威定义见 [README.md](README.md)「输出格式」一节。概要：`[TAG]` 定界，TAG 为 5 字符（`MOUNT`/`DEVDS`/`CFGDS`/`STRDS`/`HIDMT`/`RPTDS`/`UNHID`/`DEVRM`/`ERROR`/`DROP`/`HID`）；HEX 折行 dump 首行带 `len=`，续行以 `[TAG+]` 开头；报文行 `[HID] dev= itf= len=:`，续行 `[HID+]`。
 
 ## Key Files
 
 | File | Role |
 |------|------|
-| `src/pico_hid_debugger.c` | 入口：`main()`（core0）、`core1_main()`（core1）、CDC RX 命令 |
-| `src/hid_host_app.c/.h` | HID 报文处理模块：tuh_hid 回调、鼠标描述符解析、统一事件产出 |
-| `src/hid_output.c/.h` | 输出中间层：ops 接口 + static 模式变量选层；二进制帧格式权威定义在头注释 |
-| `src/out_text.c` | 文本输出实现：core_input 风格行格式化 + 按键边沿检测（原 hid_dispatch 逻辑并入于此） |
-| `src/out_binary.c` | 二进制输出实现：0x55AA 帧封装 |
-| `src/out_device.c/.h` | 设备转发实现：事件写入模拟键鼠（键盘 8B 原样/鼠标 6B 归一化），`out_device_release_all()` 切换时补发全零 |
-| `src/cdc_output.c/.h` | CDC 传输层：跨核 SPSC 字节块队列、批量 flush |
-| `src/hid_parser.c/.h` | HID 报告描述符解析器（自 pico-hid-mapper 移植）：通用字段展开、跨字节位提取、鼠标纯解析 `hid_mouse_parse_frame` |
-| `src/tusb_config.h` | TinyUSB 配置：Device = CDC + HID 键盘/鼠标 ×2；Host HID×16 + Hub |
-| `src/usb_descriptors.c` | USB 描述符：CDC + 模拟键盘/鼠标复合设备，报告描述符在此文件 |
-| `src/CMakeLists.txt` | 构建目标，链接 pico_stdlib, pico_pio_usb, tinyusb_device, tinyusb_host |
+| `src/pico_hid_debugger.c` | 入口：`main()`（core0：UART 初始化与输出循环）、`core1_main()`（core1：tuh 配置与任务循环） |
+| `src/hid_host_app.c/.h` | 信息采集模块：全部 tuh 回调、描述符抓取状态机（异步控制传输链）、hexdump 格式化 |
+| `src/uart_output.c/.h` | 跨核传输层：SPSC 字节块队列、UART0 初始化（GPIO2/3 @ 921600）、core0 批量写出 |
+| `src/tusb_config.h` | TinyUSB 配置：仅 Host 栈（CFG_TUD_ENABLED=0），Host HID×16 + Hub，枚举缓冲 512 |
+| `src/CMakeLists.txt` | 构建目标，链接 pico_stdlib, pico_pio_usb, tinyusb_host；stdio UART/USB 显式关闭 |
 | `CMakeLists.txt` | Top-level: sets board to `pico2`, includes Pico SDK |
 | `lib/pico_pio_usb/` | Vendored PIO-USB library (sekigon-gonnoc) |
-
-## USB Interface & Endpoint Layout
-
-| Interface | Type | Endpoints |
-|-----------|------|-----------|
-| ITF 0 (CDC) | CDC COMM | EP 0x81 (notif) |
-| ITF 1 (CDC) | CDC DATA | EP 0x02 (OUT), EP 0x82 (IN) |
-| ITF 2 (HID) | 模拟键盘（Boot 协议，8B 报文） | EP 0x83 (IN, 1ms) |
-| ITF 3 (HID) | 模拟鼠标（报告协议，6B 报文：buttons/wheel/x16/y16） | EP 0x84 (IN, 1ms) |
-
-VID 0xCAFE / PID 0x4002（字面量定义；接口集变化时升 PID 使主机干净重枚举）。报告描述符长度一律用 `sizeof()` 取值。
-
-## HID 解析管线（移植说明）
-
-管线自参考项目 `pico-hid-mapper` 的输入层移植，切割点为其 `core_input_*` 函数边界：
-- 原 `makcu_intercept_*` 物理输入拦截层替换为 hid_output 中间层的统一事件入口
-- 参考工程的 license XOR 报文扰动、游戏手柄/XInput 分支、Lua/宏/网络/触屏均未移植
-- 相比参考工程修复的缺口：
-  - 多 Report ID 复合鼠标——每个字段记录所属 Report ID，索引与解析锁定 X/Y 所在的鼠标集合；
-  - 实现了 PUSH(0xA0)/POP(0xB2) 全局项保存恢复；
-  - 按键字段支持非连续布局（多组侧键可被 X/Y 隔开），dispatch 顺序扫描编号；
-  - 接口协议为 None 的接口也尝试鼠标解析（部分游戏鼠 bInterfaceProtocol 不规范填 0），判定标准为"相对轴 + 按键 ≥1"，手柄摇杆/触摸板等绝对轴设备不会误判；
-  - 文本模式拔出时补发仍按着的修饰键/普通键/鼠标键（out_text 的 umount 内完成）
+| `tools/uart_monitor.py` | 上位机串口监视脚本（pyserial，自动探测/冻结/清屏） |
 
 ## TinyUSB Configuration Notes
 
 - `tusb_config.h` must be in an include path reachable from the source directory.
-- Both `CFG_TUD_ENABLED` and `CFG_TUH_ENABLED` are set to 1 — the firmware runs device and host stacks simultaneously.
-- `CFG_TUH_ENUMERATION_BUFSIZE` 为 512：复杂鼠标描述符常超 256 字节，超限时 desc_report=NULL、该设备无法解析。
-- `CFG_TUH_HID` is set to 16 (max HID devices). `CFG_TUH_DEVICE_MAX` is 4 (hub ports).
+- `CFG_TUD_ENABLED=0`：仅 Host 栈。device 侧源（`usb_descriptors.c`、`dcd_pio_usb.c`）已删除，链接库无 `tinyusb_device`。
+- `CFG_TUH_ENUMERATION_BUFSIZE` 为 512：复杂设备描述符常超 256 字节；报告描述符超过该值时 TinyUSB 不抓取（`desc_report=NULL`），本固件显示 `[RPTDS] not captured`。
+- `CFG_TUH_HID` is set to 16 (max HID instances). `CFG_TUH_HUB` is 1, `CFG_TUH_DEVICE_MAX` is 4 (hub 下设备数，不含 hub 自身)。
+- `tuh_hid_set_default_protocol(HID_PROTOCOL_REPORT)`：拿设备原生报文（Boot 协议下设备改写为简化布局，丢失厂商扩展字段）。
+- 描述符抓取缓冲（`desc_state_t` 内）按 TinyUSB 惯例 `CFG_TUSB_MEM_ALIGN`（4 字节）对齐。
 
 ## Known Limitations
 
-1. **Report-ID 键盘会误码**：REPORT 协议下自带 Report ID 的键盘每帧多一个前导字节。文本模式的边沿检测会把 ID 字节当修饰键；设备转发模式同样会把该字节透传进模拟键盘导致错码。二进制模式发原始报文不受影响。
-2. 设备转发模式下：其他 HID 设备（手柄等）与挂载/拔出/溢出/错误元事件没有承载通道，静默丢弃；模拟鼠标不声明 Boot 子类（16bit 轴不符合 boot 布局），极少数仅支持 boot 鼠标的环境（部分 BIOS）不可用。
-3. hub 下接多个键盘时，任一键盘拔出会向模拟键盘补发全零，连带松开其他键盘按住的键（换取实现简单的取舍）。
-4. 队列满只在上位机停止读取/设备未枚举完成时才可能发生（128 块 ≈ 1kHz 报告率下约 128ms 缓冲）；溢出有计数且排空后可见（仅串口目的地可显示）。
-5. CDC 未连接时串口事件即产即弃，不缓存回放（有意为之，避免重连后重放过期移动流）。
-6. 运行中切换输出格式即刻生效，但切换瞬间可能产生半行文本/半帧二进制的衔接噪声，上位机解析器应具备重同步能力（二进制按 55 AA 扫描即可）。
+1. **UART 带宽**：921600bps ≈ 11.5KB/s，hexdump 使字节膨胀 3 倍。1kHz×8B 的移动报文约占带宽一半；大报告（>30B）高频率会超载。队列满丢行计数，排空后 `[DROP ]` 补报。若需更高带宽：换更高速率（RP2350 UART 可跑 5Mbps+）或压缩输出。
+2. 描述符抓取与 HID 驱动自身的控制传输（报告描述符请求等）共用设备控制通道，由 TinyUSB 排队串行化；抓取失败（如设备不支持字符串）仅 `[ERROR]`/跳过，不影响报文流。
+3. 多配置设备只 dump 配置 1；字符串非 ASCII 字符显示 `?`。
+4. 枚举信息只在挂载时抓取一次，运行中不会重复查询（设备描述符/字符串不会变化，属有意为之）。
 
 ## Conventions
 
 - All source comments and commit messages are in **Chinese**.
 - Compiler flags: `-Wall -Wextra` with memory usage reporting via `--print-memory-usage`.
 - The `lib/pico_pio_usb/` directory is vendored — edit with caution, as it's a third-party library.
+- 行格式变更需同步更新 README「输出格式」表与 `tools/uart_monitor.py` 的高亮规则。

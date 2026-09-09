@@ -3,15 +3,8 @@ add_executable(${target_name})
 
 target_sources(${target_name} PRIVATE
  pico_hid_debugger.c
- usb_descriptors.c
  hid_host_app.c
- hid_output.c
- out_text.c
- out_binary.c
- out_device.c
- cdc_output.c
- hid_parser.c
- ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/dcd_pio_usb.c
+ uart_output.c
  ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/hcd_pio_usb.c
  )
 
@@ -28,9 +21,12 @@ target_include_directories(${target_name} PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 target_link_libraries(${target_name} PRIVATE
  pico_stdlib
  pico_pio_usb
- tinyusb_device
  tinyusb_host
  pico_time
 )
+
+# 输出走自管理的 UART0，不启用 SDK stdio 的默认串口/USB 通道
+pico_enable_stdio_uart(${target_name} 0)
+pico_enable_stdio_usb(${target_name} 0)
 
 pico_add_extra_outputs(${target_name})

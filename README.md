@@ -1,65 +1,58 @@
 # pico-hid-debugger
 
-Raspberry Pi Pico 2 (RP2350) 输入转发固件。
+Raspberry Pi Pico 2 (RP2350) USB HID 设备调试器固件。
 
-PIO-USB 端连接的键盘/鼠标解析后按运行时选择的目的地输出：
-- **设备转发模式**（开机默认）：写入原生 USB 上模拟的 HID 键盘+鼠标，Pico 成为硬件输入代理——接在 Pico 上的键鼠就是"插在上位机上"的键鼠
-- **串口输出模式**：经 CDC 串口输出到上位机（文本行或 0x55AA 二进制帧格式）
+PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显示设备/配置/字符串描述符、HID 接口信息与报告描述符；运行时把设备的原始报文按行 hexdump 输出。不做任何 HID 语义解析，所见即设备原始行为。
 
-## 命令
-
-向 CDC 串口发送单字符即可切换（即刻生效）：
-
-| 字符 | 作用 |
-|------|------|
-| `D` | 切换到设备转发模式（模拟键鼠，开机默认） |
-| `S` | 切换到串口输出模式 |
-| `T` | 文本格式并切到串口 |
-| `B` | 二进制格式并切到串口 |
-| `M` | Mac 模式：修饰键 LALT↔LGUI、RALT↔RGUI 交换，Ctrl 不变（**开机默认**） |
-| `W` | Windows 模式：修饰键不交换 |
-
-串口与模拟键鼠互斥，同一时刻只有一个目的地；Mac/Windows 修饰键交换则作用于**所有输出**（串口与模拟键鼠）。从设备模式切走时自动补发全零报告，避免上位机残留按住的键。
-
-## 输出格式
-
-### 文本模式（默认，core_input 风格事件行）
-
-```
-[MOUNT ] vid=046d pid=c52b dev=2 itf=1 proto=Keyboard   ← 设备挂载
-KEY:E0 DN LCTRL          ← 左Ctrl按下（修饰键附名称）
-KEY:04 DN                ← 'a' 按下
-KEY:04 UP
-MOUSE:DX=-12 DY=+5 WH=0 BTN=---   ← 鼠标移动帧（BTN= 当前按住的键）
-MOUSE:BTN:L DN           ← 鼠标左键按下
-HID:[A1 02 3C FF .. +12] ← 未识别设备原始 HEX（超20字节截断标注）
-[UMOUNT] vid=046d pid=c52b dev=2 itf=1            ← 设备拔出
-```
-
-### 二进制模式（0x55 0xAA 帧）
-
-```
-紧凑帧（键盘/鼠标）：  55 AA | len | type | payload
-带身份帧（其余类型）：  55 AA | len | type | PID u16le | VID u16le | port u8 | payload
-
-len = 自本字段之后至帧尾的字节数；port = USB 设备地址 dev_addr（hub 下每设备唯一）
-payload ≤ 64B
-```
-
-type 与 payload：
-- `0x01` 键盘（紧凑帧）— **原始报文**（mod + keys）
-- `0x02` 鼠标（紧凑帧）— **归一化解析结果**重新打包，6 字节：`buttons u8, wheel i8, x i16le, y i16le`
-- `0x00` 其他 HID 设备（带身份帧）— 原始报文
-- `0x10/0x11` 挂载/拔出、`0x12` 队列溢出补报、`0x13` 错误（均带身份帧；无设备来源的 PID/VID/port 填全零）
-
-键盘边沿、鼠标按键按下/松开由上位机自行比对帧数据得出；固件侧不做边沿检测。
+原生 USB Device 栈已完全禁用——Pico 在上位机上不再枚举为任何 USB 设备，避免 Host/Device 角色混淆；全部调试信息经硬件 UART（GPIO 2/3，921600bps）输出。
 
 ## 硬件
 
 | 接口 | 引脚 | 用途 |
 |------|------|------|
-| 原生 USB | 板载 Type-C | 连接目标主机（CDC 串口 + 模拟键鼠） |
-| PIO-USB | GPIO 12 (D+) / GPIO 13 (D-) | 连接实体 USB 键鼠/Hub |
+| PIO-USB | GPIO 12 (D+) / GPIO 13 (D-) | 连接被调试的 USB 设备/Hub |
+| UART0 | GPIO 2 (TX) / GPIO 3 (RX) | 调试输出，921600 8N1 |
+
+注意：RP2350 上 GPIO2/3 的 UART 功能在 FUNCSEL 11（`GPIO_FUNC_UART_AUX`），接线时 TX/RX 交叉连接 USB-UART 适配器。
+
+## 输出格式
+
+每行 `\r\n` 结尾，`[TAG]` 定界，HEX 部分 16 字节一行折行：
+
+| 行格式 | 含义 |
+|--------|------|
+| `[MOUNT] dev=%u vid=%04x pid=%04x` | 设备枚举完成（含 hub 设备自身） |
+| `[DEVDS] dev=%u vid=... bcdUSB=... cls=.. pkt0=... cfgs=...` | 设备描述符关键字段 |
+| `[DEVDS] dev=%u len=18: <hex>` | 设备描述符原始转储 |
+| `[CFGDS] dev=%u total=%u itfs=%u cfg=%u attr=0x%02x power=%umA` | 配置描述符关键字段 |
+| `[CFGDS] dev=%u len=%u: <hex>` | 配置描述符原始转储（含全部接口/端点/HID 描述符） |
+| `[STRDS] dev=%u langid=0x%04x` | 支持的语言 ID |
+| `[STRDS] dev=%u Mfg(1)="..." / Prod(2)="..." / Ser(3)="..."` | 字符串描述符（UTF-16 转可打印 ASCII） |
+| `[HIDMT] dev=%u vid=%04x pid=%04x itf=%u proto=%s cls=%02x sub=%02x eps=%u` | HID 接口挂载（proto: None/Keyboard/Mouse） |
+| `[RPTDS] dev=%u len=%u: <hex>` | HID 报告描述符原始转储 |
+| `[HID] dev=%u itf=%u len=%u: <hex>` | **原始报文**（每份报告一行起，超 16 字节折行，续行 `[HID+]`） |
+| `[UNHID] dev=%u itf=%u` | HID 接口拔出 |
+| `[DEVRM] dev=%u` | 设备移除 |
+| `[ERROR] dev=%u ...` | 描述符抓取失败 / 报告订阅失败等 |
+| `[DROP ] lost_lines=%lu` | UART 队列溢出丢弃量补报 |
+
+挂载时序示例：
+
+```
+[MOUNT] dev=2 vid=046d pid=c52b
+[DEVDS] dev=2 vid=046d pid=c52b bcdUSB=0210 cls=00/00/00 pkt0=64 bcdDev=2700 cfgs=1
+[DEVDS] dev=2 iMfg=1 iProd=2 iSer=3
+[DEVDS] dev=2 len=18: 12 01 10 02 00 00 00 40 6D 04 2B C5 00 27 01 02 03 01
+[CFGDS] dev=2 total=59 itfs=1 cfg=1 attr=0xA0 power=50mA
+[CFGDS] dev=2 len=59: 09 02 3B 00 01 01 00 A0 FA 09 04 00 00 01 03 01 01 00 ...
+[STRDS] dev=2 langid=0x0409
+[STRDS] dev=2 Mfg(1)="Logitech"
+[STRDS] dev=2 Prod(2)="USB Receiver"
+[HIDMT] dev=2 vid=046d pid=c52b itf=0 proto=Mouse cls=03 sub=01 eps=1
+[RPTDS] dev=2 len=67: 05 01 09 02 A1 01 09 01 A1 00 05 09 19 01 29 08 ...
+[HID] dev=2 itf=0 len=8: 01 00 00 00 00 00 00 00
+[HID] dev=2 itf=0 len=8: 01 FE FF 00 00 00 00 00
+```
 
 ## 构建
 
@@ -78,51 +71,46 @@ make -j$(nproc)
 
 ## 测试
 
-刷入后用串口工具打开 CDC 端口即可（波特率任意，USB CDC 不依赖波特率）：
+1. USB-UART 适配器接 GPIO2(TX)/GPIO3(RX)（交叉接线），打开串口终端，波特率 921600：
 
 ```bash
-ls /dev/tty.usbmodem*        # macOS
-screen /dev/tty.usbmodemXXXX 115200
+ls /dev/tty.usbserial*           # macOS
+screen /dev/tty.usbserialXXXX 921600
 ```
 
-插入键盘/鼠标后先出现挂载信息，随后每次按键/移动/点击都会输出事件（设备转发模式下串口静默，发 `T` 切回串口文本）。全部命令见上文[命令](#命令)一节。
+2. 被调试设备接 PIO-USB 端口（GPIO12/13，需外部 5V 供电与 D+ 1.5kΩ 上拉，或经 Hub）。插入后立即输出挂载信息与描述符 dump，随后每次报文一行。
 
 ### 上位机监视脚本
 
 ```bash
 pip install pyserial                       # 首次使用装依赖
-python3 tools/cdc_monitor.py               # 自动探测串口并连接
-python3 tools/cdc_monitor.py -p /dev/tty.usbmodemXXXX --binary  # 指定串口、二进制起步
-python3 tools/cdc_monitor.py --selftest    # 协议解码自测（无需硬件）
+python3 tools/uart_monitor.py              # 自动探测串口并连接
+python3 tools/uart_monitor.py -p /dev/tty.usbserialXXXX -b 921600  # 指定串口
 ```
 
-运行中单键切换：`d`=设备转发模式、`b`=二进制、`t`=文本、`m`/`w`=Mac/Windows 修饰键交换、`q`=退出。二进制模式下每帧同时显示解析结果与原始十六进制，例如：
-
-```
-[MOUSE] BTN=L WH=-1 DX=-12 DY=+345 | HEX: 55 AA 07 02 01 FF F4 FF 59 01
-[UMOUNT] dev=3 vid=cafe pid=4001 UMOUNT itf=7 | HEX: 55 AA 07 11 01 40 FE CA 03 07
-```
+运行中单键：`f` = 冻结/恢复滚动、`c` = 清屏、`q` = 退出。
 
 ## 目录结构
 
 ```
 src/
-├── pico_hid_debugger.c        # 入口：双核初始化、CDC RX 命令（D/S/T/B/M/W）
-├── hid_host_app.c/.h          # HID 报文处理：tuh 回调、描述符解析、统一事件产出
-├── hid_output.c/.h            # 中间层：目的地 + 串口格式选层（static 变量，运行时可切）
-├── out_text.c                 # 串口文本输出实现（含按键边沿检测）
-├── out_binary.c               # 串口二进制输出实现（0x55AA 帧）
-├── out_device.c/.h            # 设备转发实现（模拟键鼠）
-├── cdc_output.c/.h            # 跨核 SPSC 队列，按 kind 分发到 CDC/模拟 HID
-├── hid_parser.c/.h            # HID 报告描述符解析器（鼠标归一化提取）
-├── tusb_config.h              # TinyUSB 配置
-├── usb_descriptors.c          # USB 描述符（CDC + 模拟键盘/鼠标）
-└── CMakeLists.txt             # 构建配置
+├── pico_hid_debugger.c   # 入口：双核初始化（core1=USB Host，core0=UART 输出）
+├── hid_host_app.c/.h     # 信息采集：TinyUSB 回调、描述符抓取状态机、报文 hexdump
+├── uart_output.c/.h      # 跨核 SPSC 队列 → UART0（GPIO2/3，921600）
+├── tusb_config.h         # TinyUSB 配置（仅 Host 栈）
+└── CMakeLists.txt        # 构建配置
 tools/
-└── cdc_monitor.py             # 上位机串口监视脚本
+└── uart_monitor.py       # 上位机串口监视脚本
 lib/
-└── pico_pio_usb/              # PIO-USB 库（第三方）
+└── pico_pio_usb/         # PIO-USB 库（第三方）
 ```
+
+## 已知限制
+
+1. UART 无流控：921600bps 约 11.5KB/s，高流量设备（连续移动报文、大报告）可能超出带宽，队列满即丢行并计数，排空后以 `[DROP ]` 补报。
+2. 报告描述符超过 TinyUSB 枚举缓冲（512 字节）时显示 `[RPTDS] not captured`。
+3. 多配置设备只转储配置 1。
+4. 字符串描述符按 UTF-16LE 低字节转可打印 ASCII，非 ASCII 字符显示 `?`。
 
 ## 许可证
 

@@ -1,102 +1,365 @@
 /*
- * HID 报文处理模块实现。
+ * USB 设备信息采集模块实现。
  *
- * 数据流：tuh_hid_report_received_cb 收到报文 →
- *   键盘接口        → 原始报文（mod + keys）
- *   鼠标（已解析）  → hid_mouse_parse_frame 归一化为按键/滚轮/X/Y
- *   其他/未识别     → 原始报文兜底
- * → hid_output 中间层按当前模式格式化输出。
+ * 描述符抓取用异步控制传输串成状态机（tuh_descriptor_get_* 完成回调里
+ * 发起下一步）。每种描述符先打一行解析出的关键字段，再整块 hexdump；
+ * 字符串描述符按 UTF-16LE 转可打印 ASCII 显示。设备级信息每设备只采集
+ * 一次（tuh_mount_cb），HID 接口级信息每次挂载采集。
  */
 
 #include <string.h>
+#include <stdio.h>
+#include <stdarg.h>
 
 #include "tusb.h"
 
+#include "uart_output.h"
 #include "hid_host_app.h"
-#include "hid_parser.h"
-#include "hid_output.h"
 
-// 鼠标设备句柄：挂载时解析好的描述符（按 instance 分槽）
-static hid_mouse_dev_t g_mouse_devs[CFG_TUH_HID];
+//--------------------------------------------------------------------+
+// 行输出
+//--------------------------------------------------------------------+
 
-// HID 设备挂载时的回调
-// 注意: 如果报告描述符长度 > CFG_TUH_ENUMERATION_BUFSIZE，desc_report 为 NULL，
-// 鼠标将无法解析、退化为原始报文兜底输出
+// 行输出：格式化 + 追加 \r\n + 入队
+static void emit(const char *fmt, ...)
+{
+    char buf[UARTO_REC_MAX];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof(buf) - 2, fmt, ap);
+    va_end(ap);
+    if (n <= 0) return;
+    if (n > (int)sizeof(buf) - 2) n = (int)sizeof(buf) - 2;
+    buf[n++] = '\r';
+    buf[n++] = '\n';
+    uart_output_send(buf, (uint8_t)n);
+}
+
+static const char hex_table[] = "0123456789ABCDEF";
+
+// 描述符抓取状态机的控制传输完成回调（前向声明，状态机互相引用）
+static void desc_xfer_cb(tuh_xfer_t *xfer);
+
+// 向当前行追加 " XX " 形式的十六进制（调用方保证空间）
+static void append_hex(char **p, const uint8_t *data, uint16_t n)
+{
+    while (n--) {
+        *(*p)++ = ' ';
+        *(*p)++ = hex_table[(*data >> 4) & 0x0F];
+        *(*p)++ = hex_table[(*data++) & 0x0F];
+    }
+}
+
+// HEX 折行 dump：首行 "[TAG] dev=%u len=%u:"，每行至多 16 字节，
+// 续行 "[TAG+] dev=%u:"。整块数据全部转储，不截断。
+static void dump_hex(const char *tag, uint8_t dev_addr,
+                     const uint8_t *data, uint16_t len)
+{
+    char line[UARTO_REC_MAX];
+    uint16_t off = 0;
+
+    while (off < len) {
+        uint16_t n = len - off;
+        if (n > 16u) n = 16u;
+
+        int used;
+        if (off) {
+            used = snprintf(line, sizeof(line) - 2, "[%s+] dev=%u:", tag, dev_addr);
+        } else {
+            used = snprintf(line, sizeof(line) - 2, "[%s] dev=%u len=%u:", tag, dev_addr, len);
+        }
+        if (used < 0) return;
+        char *p = line + used;
+        append_hex(&p, data + off, n);
+        *p++ = '\r';
+        *p++ = '\n';
+        uart_output_send(line, (uint8_t)(p - line));
+
+        off = (uint16_t)(off + n);
+    }
+}
+
+// 报文行："[HID] dev=%u itf=%u len=%u:" + HEX，续行 "[HID+]"
+static void emit_report(uint8_t dev_addr, uint8_t itf_num,
+                        const uint8_t *report, uint16_t len)
+{
+    char line[UARTO_REC_MAX];
+    uint16_t off = 0;
+
+    while (off < len) {
+        uint16_t n = len - off;
+        if (n > 16u) n = 16u;
+
+        int used;
+        if (off) {
+            used = snprintf(line, sizeof(line) - 2, "[HID+] dev=%u itf=%u:", dev_addr, itf_num);
+        } else {
+            used = snprintf(line, sizeof(line) - 2, "[HID] dev=%u itf=%u len=%u:",
+                            dev_addr, itf_num, len);
+        }
+        if (used < 0) return;
+        char *p = line + used;
+        append_hex(&p, report + off, n);
+        *p++ = '\r';
+        *p++ = '\n';
+        uart_output_send(line, (uint8_t)(p - line));
+
+        off = (uint16_t)(off + n);
+    }
+}
+
+//--------------------------------------------------------------------+
+// 描述符抓取状态机（每设备一份状态）
+//--------------------------------------------------------------------+
+
+enum {
+    DS_IDLE = 0,
+    DS_DEV,     // 设备描述符已发出，等待完成
+    DS_CFG,     // 配置描述符
+    DS_LANG,    // 语言 ID 字符串
+    DS_MFG,     // 厂商字符串
+    DS_PROD,    // 产品字符串
+    DS_SER,     // 序列号字符串
+};
+
+#define DESC_DEV_MAX   18u                          // tusb_desc_device_t
+#define DESC_CFG_MAX   CFG_TUH_ENUMERATION_BUFSIZE  // 512，与枚举缓冲同级
+#define DESC_STR_MAX   128u
+// daddr 上界：下游设备 + hub 自身（CFG_TUH_DEVICE_MAX 不含 hub）
+#define DESC_MAX_DEV   (CFG_TUH_DEVICE_MAX + CFG_TUH_HUB + 1u)
+
+typedef struct {
+    uint8_t  step;
+    // 传输缓冲按 TinyUSB 惯例 4 字节对齐（CFG_TUSB_MEM_ALIGN）
+    uint8_t  dev_buf[DESC_DEV_MAX] CFG_TUSB_MEM_ALIGN;
+    uint8_t  cfg_buf[DESC_CFG_MAX] CFG_TUSB_MEM_ALIGN;
+    uint8_t  str_buf[DESC_STR_MAX] CFG_TUSB_MEM_ALIGN;
+    uint16_t langid;
+    uint8_t  str_seq[3];   // 待抓取的字符串索引队列（iMfg/iProd/iSer）
+    uint8_t  str_pos;      // str_seq 游标
+} desc_state_t;
+
+static desc_state_t s_desc[DESC_MAX_DEV];
+
+// 各 HID instance 对应的接口号（报文行显示用；umount 时清零）
+static uint8_t s_itf_num[CFG_TUH_HID];
+
+static desc_state_t *state_of(uint8_t dev_addr)
+{
+    return dev_addr < DESC_MAX_DEV ? &s_desc[dev_addr] : NULL;
+}
+
+static void desc_fetch_fail(desc_state_t *st, uint8_t dev_addr)
+{
+    emit("[ERROR] dev=%u desc fetch busy/failed (step=%u)", dev_addr, st->step);
+    st->step = DS_IDLE;
+}
+
+// 发起下一个字符串请求；没有可抓的字符串时结束
+static void fetch_next_string(desc_state_t *st, uint8_t dev_addr)
+{
+    while (st->str_pos < 3u) {
+        uint8_t idx = st->str_seq[st->str_pos];
+        if (!idx) { st->str_pos++; continue; }
+
+        st->step = (uint8_t)(DS_MFG + st->str_pos);
+        if (tuh_descriptor_get_string(dev_addr, idx, st->langid,
+                                      st->str_buf, DESC_STR_MAX, desc_xfer_cb, 0)) {
+            return;
+        }
+        desc_fetch_fail(st, dev_addr);
+        return;
+    }
+    st->step = DS_IDLE;
+}
+
+// 字符串描述符 → "Mfg(1)=\"Logitech\"" 行（UTF-16LE 转可打印 ASCII）
+static void emit_string(desc_state_t *st, uint8_t dev_addr, const char *label, uint8_t idx)
+{
+    uint8_t len = st->str_buf[0];
+    if (len < 4u || st->str_buf[1] != TUSB_DESC_STRING) {
+        emit("[STRDS] dev=%u %s(%u) <invalid>", dev_addr, label, idx);
+        return;
+    }
+
+    char text[64];
+    uint8_t n = 0;
+    for (uint8_t i = 2u; i < len && n < sizeof(text) - 1u; i += 2u) {
+        uint8_t c = st->str_buf[i];
+        text[n++] = (c >= 0x20u && c < 0x7Fu) ? (char)c : '?';
+    }
+    text[n] = '\0';
+    emit("[STRDS] dev=%u %s(%u)=\"%s\"", dev_addr, label, idx, text);
+}
+
+// 控制传输完成回调：dump 当前步结果并发起下一步
+static void desc_xfer_cb(tuh_xfer_t *xfer)
+{
+    desc_state_t *st = state_of(xfer->daddr);
+    // 设备可能已拔出：状态复位后迟到的回调直接丢弃
+    if (!st || st->step == DS_IDLE) return;
+
+    if (xfer->result != XFER_RESULT_SUCCESS) {
+        emit("[ERROR] dev=%u desc fetch result=%d (step=%u)",
+             xfer->daddr, (int)xfer->result, st->step);
+        st->step = DS_IDLE;
+        return;
+    }
+
+    switch (st->step) {
+    case DS_DEV: {
+        tusb_desc_device_t const *d = (tusb_desc_device_t const *)st->dev_buf;
+        emit("[DEVDS] dev=%u vid=%04x pid=%04x bcdUSB=%04x cls=%02x/%02x/%02x "
+             "pkt0=%u bcdDev=%04x cfgs=%u",
+             xfer->daddr, d->idVendor, d->idProduct, d->bcdUSB,
+             d->bDeviceClass, d->bDeviceSubClass, d->bDeviceProtocol,
+             d->bMaxPacketSize0, d->bcdDevice, d->bNumConfigurations);
+        emit("[DEVDS] dev=%u iMfg=%u iProd=%u iSer=%u",
+             xfer->daddr, d->iManufacturer, d->iProduct, d->iSerialNumber);
+        dump_hex("DEVDS", xfer->daddr, st->dev_buf, (uint16_t)xfer->actual_len);
+
+        st->str_seq[0] = d->iManufacturer;
+        st->str_seq[1] = d->iProduct;
+        st->str_seq[2] = d->iSerialNumber;
+        st->str_pos = 0;
+
+        st->step = DS_CFG;
+        if (!tuh_descriptor_get_configuration(xfer->daddr, 1, st->cfg_buf, DESC_CFG_MAX,
+                                              desc_xfer_cb, 0)) {
+            desc_fetch_fail(st, xfer->daddr);
+        }
+        break;
+    }
+
+    case DS_CFG: {
+        tusb_desc_configuration_t const *c = (tusb_desc_configuration_t const *)st->cfg_buf;
+        emit("[CFGDS] dev=%u total=%u itfs=%u cfg=%u attr=0x%02x power=%umA",
+             xfer->daddr, c->wTotalLength, c->bNumInterfaces, c->bConfigurationValue,
+             c->bmAttributes, c->bMaxPower * 2u);
+        dump_hex("CFGDS", xfer->daddr, st->cfg_buf, (uint16_t)xfer->actual_len);
+
+        st->step = DS_LANG;
+        if (!tuh_descriptor_get_string(xfer->daddr, 0, 0, st->str_buf, DESC_STR_MAX,
+                                       desc_xfer_cb, 0)) {
+            // 拿不到语言 ID 就放弃全部字符串，不算致命
+            st->step = DS_IDLE;
+        }
+        break;
+    }
+
+    case DS_LANG: {
+        if (xfer->actual_len >= 4u) {
+            st->langid = (uint16_t)(st->str_buf[2] | (st->str_buf[3] << 8));
+            emit("[STRDS] dev=%u langid=0x%04x", xfer->daddr, st->langid);
+        }
+        st->step = DS_IDLE;   // fetch_next_string 内部会推进到具体字符串
+        fetch_next_string(st, xfer->daddr);
+        break;
+    }
+
+    case DS_MFG:
+    case DS_PROD:
+    case DS_SER: {
+        static const char *const labels[3] = { "Mfg", "Prod", "Ser" };
+        uint8_t pos = (uint8_t)(st->step - DS_MFG);
+        emit_string(st, xfer->daddr, labels[pos], st->str_seq[pos]);
+        st->str_pos = (uint8_t)(pos + 1u);
+        fetch_next_string(st, xfer->daddr);
+        break;
+    }
+
+    default:
+        st->step = DS_IDLE;
+        break;
+    }
+}
+
+//--------------------------------------------------------------------+
+// TinyUSB Host 回调
+//--------------------------------------------------------------------+
+
+// 设备枚举完成（含 hub 设备自身）
+void tuh_mount_cb(uint8_t dev_addr)
+{
+    uint16_t vid, pid;
+    tuh_vid_pid_get(dev_addr, &vid, &pid);
+    emit("[MOUNT] dev=%u vid=%04x pid=%04x", dev_addr, vid, pid);
+
+    desc_state_t *st = state_of(dev_addr);
+    if (!st) {
+        emit("[ERROR] dev=%u exceeds dev table (%u)", dev_addr, DESC_MAX_DEV);
+        return;
+    }
+    memset(st, 0, sizeof(*st));
+
+    st->step = DS_DEV;
+    if (!tuh_descriptor_get_device(dev_addr, st->dev_buf, DESC_DEV_MAX,
+                                   desc_xfer_cb, 0)) {
+        desc_fetch_fail(st, dev_addr);
+    }
+}
+
+// 设备移除（掉线或拔出）
+void tuh_umount_cb(uint8_t dev_addr)
+{
+    emit("[DEVRM] dev=%u", dev_addr);
+    desc_state_t *st = state_of(dev_addr);
+    if (st) st->step = DS_IDLE;
+}
+
+static const char *const s_proto_str[3] = { "None", "Keyboard", "Mouse" };
+
+// HID 接口挂载：dump 接口信息 + 报告描述符，然后订阅报文
 void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
-                      uint8_t const* desc_report, uint16_t desc_len)
+                      uint8_t const *desc_report, uint16_t desc_len)
 {
-  // 接口协议类型 (hid_interface_protocol_enum_t)
-  uint8_t const itf_protocol = tuh_hid_interface_protocol(dev_addr, instance);
-
-  uint16_t vid, pid;
-  tuh_vid_pid_get(dev_addr, &vid, &pid);
-  const hid_dev_info_t info = { .vid = vid, .pid = pid, .dev_addr = dev_addr };
-
-  // 鼠标设备：挂载时解析报告描述符，供 hid_mouse_parse_frame 使用。
-  // 接口协议为 None 的接口也尝试解析：部分鼠标（尤其游戏鼠）的
-  // bInterfaceProtocol 不规范填 0，hid_mouse_parse 会按"相对轴+按键"
-  // 判定是否真是鼠标（手柄摇杆/触摸板为绝对轴，不会误判）。
-  // （instance 是 TinyUSB 全局 _hidh_itf[] 下标，恒 < CFG_TUH_HID；此处仍显式守界）
-  if (instance < CFG_TUH_HID &&
-      itf_protocol != HID_ITF_PROTOCOL_KEYBOARD && desc_report && desc_len > 0) {
-    memset(&g_mouse_devs[instance], 0, sizeof(hid_mouse_dev_t));
-    g_mouse_devs[instance].parsed = hid_mouse_parse(&g_mouse_devs[instance].desc,
-                                                    desc_report, desc_len);
-    // 解析失败不致命：该设备后续报告走原始报文兜底，不会静默丢数据
-  }
-
-  hid_output_mount(instance, &info, itf_protocol);
-
-  // 订阅该接口的报告，收到后进入 tuh_hid_report_received_cb()
-  if ( !tuh_hid_receive_report(dev_addr, instance) )
-  {
-    hid_output_error("cannot request report");
-  }
-}
-
-// HID 设备拔出时的回调
-void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance)
-{
-  uint16_t vid, pid;
-  tuh_vid_pid_get(dev_addr, &vid, &pid);
-  const hid_dev_info_t info = { .vid = vid, .pid = pid, .dev_addr = dev_addr };
-
-  // 中间层先补发仍按着的键（文本模式的边沿状态在其内部维护），
-  // 再清理本模块的鼠标描述符槽位
-  hid_output_umount(instance, &info);
-  if (instance < CFG_TUH_HID) {
-    memset(&g_mouse_devs[instance], 0, sizeof(hid_mouse_dev_t));
-  }
-}
-
-// 收到 HID 设备中断端点报告时的回调：解析并产出统一事件
-void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance,
-                                uint8_t const* report, uint16_t len)
-{
-  if (len != 0 && instance < CFG_TUH_HID) {
     uint8_t const itf_protocol = tuh_hid_interface_protocol(dev_addr, instance);
     uint16_t vid, pid;
     tuh_vid_pid_get(dev_addr, &vid, &pid);
-    const hid_dev_info_t info = { .vid = vid, .pid = pid, .dev_addr = dev_addr };
 
-    if (itf_protocol == HID_ITF_PROTOCOL_KEYBOARD) {
-      // 标准布局键盘：原始报文（mod + keys）直接上送
-      hid_output_keyboard(instance, &info, report, (uint8_t)len);
-    } else if (g_mouse_devs[instance].parsed) {
-      // 鼠标：归一化提取；Report ID 不匹配（如复合设备的消费者键报文）则跳过
-      hid_mouse_frame_t frame;
-      if (hid_mouse_parse_frame(&g_mouse_devs[instance].desc, report, len, &frame)) {
-        hid_output_mouse(instance, &info, &frame);
-      }
-    } else {
-      // 手柄/厂商自定义设备：原始报文兜底
-      hid_output_generic(instance, &info, report, len);
+    uint8_t itf_num = 0, cls = 0, sub = 0, eps = 0;
+    tuh_itf_info_t itf_info;
+    if (instance < CFG_TUH_HID && tuh_hid_itf_get_info(dev_addr, instance, &itf_info)) {
+        itf_num = itf_info.desc.bInterfaceNumber;
+        cls = itf_info.desc.bInterfaceClass;
+        sub = itf_info.desc.bInterfaceSubClass;
+        eps = itf_info.desc.bNumEndpoints;
+        s_itf_num[instance] = itf_num;
     }
-  }
 
-  // 继续请求接收下一份报告
-  if ( !tuh_hid_receive_report(dev_addr, instance) )
-  {
-    hid_output_error("cannot request report");
-  }
+    emit("[HIDMT] dev=%u vid=%04x pid=%04x itf=%u proto=%s cls=%02x sub=%02x eps=%u",
+         dev_addr, vid, pid, itf_num,
+         itf_protocol < 3u ? s_proto_str[itf_protocol] : "?", cls, sub, eps);
+
+    // 报告描述符由 TinyUSB 枚举时抓取；超枚举缓冲时为 NULL
+    if (desc_report && desc_len) {
+        dump_hex("RPTDS", dev_addr, desc_report, desc_len);
+    } else {
+        emit("[RPTDS] dev=%u itf=%u not captured (>enum buf)", dev_addr, itf_num);
+    }
+
+    if (!tuh_hid_receive_report(dev_addr, instance)) {
+        emit("[ERROR] dev=%u cannot request report", dev_addr);
+    }
+}
+
+// HID 接口拔出
+void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance)
+{
+    uint8_t itf_num = (instance < CFG_TUH_HID) ? s_itf_num[instance] : 0;
+    emit("[UNHID] dev=%u itf=%u", dev_addr, itf_num);
+    if (instance < CFG_TUH_HID) s_itf_num[instance] = 0;
+}
+
+// 收到 HID 中断端点报文：整包 hexdump，不做语义解析
+void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance,
+                                uint8_t const *report, uint16_t len)
+{
+    if (len != 0 && instance < CFG_TUH_HID) {
+        emit_report(dev_addr, s_itf_num[instance], report, len);
+    }
+
+    if (!tuh_hid_receive_report(dev_addr, instance)) {
+        emit("[ERROR] dev=%u cannot request report", dev_addr);
+    }
 }

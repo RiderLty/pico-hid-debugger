@@ -36,8 +36,9 @@
 
 #define CFG_TUSB_OS               OPT_OS_PICO
 
-// Enable device stack
-#define CFG_TUD_ENABLED     1
+// Enable device stack —— 调试器仅作 Host，禁用原生 USB Device 栈，
+// 避免 Pico 在上位机上枚举出设备造成角色混淆
+#define CFG_TUD_ENABLED     0
 
 // Enable host stack with pio-usb if Pico-PIO-USB library is available
 #define CFG_TUH_ENABLED     1
@@ -60,29 +61,6 @@
 #ifndef CFG_TUSB_MEM_ALIGN
 #define CFG_TUSB_MEM_ALIGN          __attribute__ ((aligned(4)))
 #endif
-
-//--------------------------------------------------------------------
-// DEVICE CONFIGURATION
-//--------------------------------------------------------------------
-
-#ifndef CFG_TUD_ENDPOINT0_SIZE
-#define CFG_TUD_ENDPOINT0_SIZE    64
-#endif
-
-//------------- CLASS -------------//
-// CDC 串口 + 模拟 HID 键盘/鼠标（设备转发模式）
-#define CFG_TUD_CDC              1
-#define CFG_TUD_HID              2    // instance 0 = 键盘，1 = 鼠标
-
-// CDC FIFO size of TX and RX
-#define CFG_TUD_CDC_RX_BUFSIZE   256
-#define CFG_TUD_CDC_TX_BUFSIZE   256
-
-// CDC Endpoint transfer buffer size, more is faster
-#define CFG_TUD_CDC_EP_BUFSIZE   64
-
-// HID Endpoint transfer buffer size
-#define CFG_TUD_HID_EP_BUFSIZE   64
 
 //--------------------------------------------------------------------
 // HOST CONFIGURATION
