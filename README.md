@@ -2,6 +2,10 @@
 
 Raspberry Pi Pico 2 (RP2350) USB HID 设备调试器固件。
 
+仓库地址：https://github.com/RiderLty/pico-hid-debugger
+
+在线调试终端：https://riderlty.github.io/pico-hid-debugger/
+
 PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显示设备/配置/字符串描述符、HID 接口信息与报告描述符；运行时把设备的原始报文按行 hexdump 输出。不做任何 HID 语义解析，所见即设备原始行为。
 
 原生 USB Device 栈已完全禁用——Pico 在上位机上不再枚举为任何 USB 设备，避免 Host/Device 角色混淆；全部调试信息经硬件 UART（GPIO 2/3，2000000bps）输出。
