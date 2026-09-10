@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <stdarg.h>
 
+#include "pico/time.h"
+
 #include "tusb.h"
 
 #include "uart_output.h"
@@ -132,6 +134,19 @@ static desc_state_t s_desc[DESC_MAX_DEV];
 
 // 各 HID instance 对应的接口号（报文行显示用；umount 时清零）
 static uint8_t s_itf_num[CFG_TUH_HID];
+
+// ---------------------------------------------------------------- 报文失败熔断
+// HID 中断 IN 不会发送 0 长度报文：0 字节完成 = 传输失败（设备已拔出/异常）。
+// 新版 PIO-USB 对失败事务内部重试 3 次，若固件继续无条件重入队，
+// 死设备的端点会把每帧调度带宽耗尽在超时事务上，Hub 的状态轮询被饿死，
+// 拔出事件永远无法上报（卸载流程卡死、日志死循环）。
+// 因此连续 0 字节达到阈值即停止该接口的重入队，让出调度带宽给 Hub；
+// 停止后仅以 500ms 慢速探测保活，卸载/重挂时计数复位。
+#define XFER_FAIL_STOP     8u     // 连续失败次数阈值
+#define XFER_PROBE_US (500 * 1000u)
+
+static uint8_t  s_fail_cnt[CFG_TUH_HID];
+static uint32_t s_fail_last_us[CFG_TUH_HID];
 
 static desc_state_t *state_of(uint8_t dev_addr)
 {
@@ -306,6 +321,8 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
     uint16_t vid, pid;
     tuh_vid_pid_get(dev_addr, &vid, &pid);
 
+    if (instance < CFG_TUH_HID) s_fail_cnt[instance] = 0;   // 新挂载：清失败计数
+
     uint8_t itf_num = 0, cls = 0, sub = 0, eps = 0;
     tuh_itf_info_t itf_info;
     if (instance < CFG_TUH_HID && tuh_hid_itf_get_info(dev_addr, instance, &itf_info)) {
@@ -337,18 +354,40 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance)
 {
     uint8_t itf_num = (instance < CFG_TUH_HID) ? s_itf_num[instance] : 0;
     emit("[UNHID] dev=%u itf=%u", dev_addr, itf_num);
-    if (instance < CFG_TUH_HID) s_itf_num[instance] = 0;
+    if (instance < CFG_TUH_HID) {
+        s_itf_num[instance] = 0;
+        s_fail_cnt[instance] = 0;      // 卸载：复位失败计数，供下一个设备复用
+    }
 }
 
 // 收到 HID 中断端点报文：整包 hexdump，不做语义解析
 void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance,
                                 uint8_t const *report, uint16_t len)
 {
-    if (len != 0 && instance < CFG_TUH_HID) {
-        hexdump("HID", dev_addr, (int)s_itf_num[instance], report, len);
-    }
+  if (instance >= CFG_TUH_HID) return;
 
-    if (!tuh_hid_receive_report(dev_addr, instance)) {
-        emit("[ERROR] dev=%u cannot request report", dev_addr);
+  if (len != 0) {
+    s_fail_cnt[instance] = 0;
+    hexdump("HID", dev_addr, (int)s_itf_num[instance], report, len);
+  } else {
+    // 0 字节完成 = 传输失败。连续失败达到阈值后熔断重入队，
+    // 避免死设备端点拖垮 PIO-USB 调度、饿死 Hub 的拔出检测
+    if (s_fail_cnt[instance] < XFER_FAIL_STOP) {
+      s_fail_cnt[instance]++;
+      s_fail_last_us[instance] = time_us_32();
+      if (s_fail_cnt[instance] == XFER_FAIL_STOP) {
+        emit("[ERROR] dev=%u itf=%u xfer failed x%u, polling paused",
+             dev_addr, s_itf_num[instance], XFER_FAIL_STOP);
+        return;
+      }
+    } else if (time_us_32() - s_fail_last_us[instance] < XFER_PROBE_US) {
+      return;                            // 熔断后的慢速探测间隔
+    } else {
+      s_fail_last_us[instance] = time_us_32();
     }
+  }
+
+  if (!tuh_hid_receive_report(dev_addr, instance)) {
+    emit("[ERROR] dev=%u cannot request report", dev_addr);
+  }
 }
