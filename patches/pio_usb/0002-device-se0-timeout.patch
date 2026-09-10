@@ -1,0 +1,22 @@
+diff --git a/src/pio_usb_device.c b/src/pio_usb_device.c
+index 119f473..f54dfcf 100644
+--- a/src/pio_usb_device.c
++++ b/src/pio_usb_device.c
+@@ -367,6 +367,17 @@ void pio_usb_device_task(void) {
+       pio_port_t *pp = PIO_USB_PIO_PORT(0);
+       restart_usb_reveiver(pp);
+     }
++
++    // 防止 SE0 持续（宿主断开 / 异常总线状态）时永久自旋阻塞 core1：
++    // core1 卡在这里就不会进 engine_job_poll，core0 的 engine_job_submit
++    // 会一直等不到响应，最终 1s 看门狗复位（表现为"收到指令后重启"）。
++    // USB 复位最长约 10ms，这里 20ms 上限足够覆盖正常复位，超出则跳出，
++    // 把控制权还给 core1 主循环，下一轮 task 再继续检测。
++    // 来源：pico-hid-mapper 的同名修复（该仓库 commit 614d951），本仓库
++    // 在 device 模式下不用 pio-usb，但保留以保持两边子模块状态一致。
++    if (se0_time_us >= 20000) {
++      break;
++    }
+   }
+ }
+ 

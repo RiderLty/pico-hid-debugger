@@ -27,6 +27,14 @@ if [ -z "${PICO_SDK_PATH:-}" ] || [ ! -d "$PICO_SDK_PATH" ]; then
 fi
 export PICO_SDK_PATH
 
+# ---- 子模块与 PIO-USB 补丁（幂等；补丁原因见 patches/pio_usb/README.md）----
+# clone 时没带 --recurse-submodules 也能一键跑通：这里补初始化 + 打补丁。
+# 非 git 方式（源码包）获取时跳过，交由 CMake 的检查给出提示。
+if git -C . rev-parse --git-dir >/dev/null 2>&1; then
+    echo ">> 同步子模块与 PIO-USB 补丁"
+    ./scripts/apply-patches.sh
+fi
+
 # ---- 可选参数：UART_BAUD 等环境变量转发为 CMake 缓存变量 ----
 # 未设置时显式清空缓存项：缓存值会跨次构建持久存在，
 # 不清空则历史上的 UART_BAUD 会一直覆盖固件默认值（uart_output.h）

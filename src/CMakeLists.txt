@@ -23,6 +23,12 @@ target_compile_options(${target_name} PRIVATE -Wall -Wextra)
 # use tinyusb implementation
 target_compile_definitions(${target_name} PRIVATE PIO_USB_USE_TINYUSB)
 
+# 补丁在位标志（顶层 CMakeLists.txt 依据实际打补丁情况设置）→ 写进 [BOOT] 行，
+# 用来一眼确认刷进板子的到底是哪份固件（tusb 版本 + 两处补丁是否生效）
+target_compile_definitions(${target_name} PRIVATE
+  TUSB_HUB_PATCHED=${TUSB_HUB_PATCHED}
+  PIO_USB_COMMIT="${PIO_USB_COMMIT}")
+
 # needed so tinyusb can find tusb_config.h
 target_include_directories(${target_name} PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 

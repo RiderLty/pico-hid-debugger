@@ -1,0 +1,57 @@
+--- a/src/pio_usb_host.c	2026-09-10 21:20:40
++++ b/src/pio_usb_host.c	2026-09-10 21:20:57
+@@ -285,7 +285,7 @@
+ // 三个 HID 端点都在失败），共用一组全局量会让 SETUP 的样本在应用读到之前
+ // 就被覆盖。应用侧读完对应位后清 pio_usb_dbg_pending。
+ //--------------------------------------------------------------------
+-#define PIO_USB_DBG_KINDS 3
++#define PIO_USB_DBG_KINDS 4  // 0=IN(控制管道 ep 0x80) 1=IN(其它) 2=OUT 3=SETUP
+ 
+ // pio_usb_dbg_sample_t 定义在 pio_usb_ll.h（应用侧也要用同一份布局）
+ 
+@@ -302,19 +302,24 @@
+ 
+ static inline void __not_in_flash_func(pio_usb_dbg_capture)(
+     const pio_port_t *pp, const endpoint_t *ep, uint8_t kind, int res) {
+-  uint8_t const bit = (uint8_t)(1u << kind);
++  // IN 再按端点细分：控制管道（ep 0x80）单独占一个槽。否则每帧都在失败的
++  // HID 端点会把真正想看的"控制传输 IN"样本挤掉——实测就这么漏掉了 EP 80
++  // 的数据阶段样本，导致只能看到无关的 HID 噪声。
++  uint8_t const slot =
++      (kind == 0) ? ((ep->ep_num == 0x80) ? 0 : 1) : (uint8_t)(kind + 1);
++  uint8_t const bit = (uint8_t)(1u << slot);
+   pio_usb_dbg_seq++;
+   if (pio_usb_dbg_pending & bit) {
+-    return;  // 该类型已有未读取样本，不覆盖（应用读完会清位）
++    return;  // 该槽已有未读取样本，不覆盖（应用读完会清位）
+   }
+-  pio_usb_dbg_last[kind].kind = kind;
+-  pio_usb_dbg_last[kind].ep = ep->ep_num;
+-  pio_usb_dbg_last[kind].res = (int8_t)res;
+-  pio_usb_dbg_last[kind].started = pio_usb_dbg_started;
+-  pio_usb_dbg_last[kind].sync = pp->usb_rx_buffer[0];
+-  pio_usb_dbg_last[kind].pid = pp->usb_rx_buffer[1];
+-  pio_usb_dbg_last[kind].retry = (uint8_t)ep->failed_count;
+-  pio_usb_dbg_last[kind].seq = pio_usb_dbg_seq;
++  pio_usb_dbg_last[slot].kind = slot;
++  pio_usb_dbg_last[slot].ep = ep->ep_num;
++  pio_usb_dbg_last[slot].res = (int8_t)res;
++  pio_usb_dbg_last[slot].started = pio_usb_dbg_started;
++  pio_usb_dbg_last[slot].sync = pp->usb_rx_buffer[0];
++  pio_usb_dbg_last[slot].pid = pp->usb_rx_buffer[1];
++  pio_usb_dbg_last[slot].retry = (uint8_t)ep->failed_count;
++  pio_usb_dbg_last[slot].seq = pio_usb_dbg_seq;
+   pio_usb_dbg_pending |= bit;
+ }
+ 
+--- a/src/pio_usb_ll.h	2026-09-10 21:20:40
++++ b/src/pio_usb_ll.h	2026-09-10 21:20:57
+@@ -265,7 +265,7 @@
+   uint32_t seq;     // 样本序号
+ } pio_usb_dbg_sample_t;
+ 
+-extern volatile pio_usb_dbg_sample_t pio_usb_dbg_last[3];
++extern volatile pio_usb_dbg_sample_t pio_usb_dbg_last[4];
+ extern volatile uint8_t pio_usb_dbg_pending;
+ extern volatile uint8_t pio_usb_dbg_started;
+ extern volatile uint32_t pio_usb_dbg_attempt[3];

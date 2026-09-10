@@ -1,0 +1,17 @@
+--- a/src/pio_usb_host.c
++++ b/src/pio_usb_host.c
+@@ -20,7 +20,13 @@
+ #include "usb_crc.h"
+ 
+ enum {
+-  TRANSACTION_MAX_RETRY = 3, // Number of times to retry a failed transaction
++  // 一个事务连续失败多少次才判定硬失败。上游是 3（≈3 帧 ≈3ms）。
++  // 实测 hub 在处理下游设备拔出（端口状态更新）期间会对主机的控制传输
++  // 短暂不响应 —— 3ms 窗口不够，GetPortStatus 的数据阶段因此直接失败，
++  // TinyUSB 的 hub 驱动拿不到端口状态，拔出事件就处理不完。放宽到 30 帧
++  // （≈30ms）给它留出恢复时间；对真正不存在的端点只是把错误上报推迟
++  // ~27ms（每帧的尝试次数不变，不占额外带宽）。
++  TRANSACTION_MAX_RETRY = 30,
+ };
+ 
+ static alarm_pool_t *_alarm_pool = NULL;

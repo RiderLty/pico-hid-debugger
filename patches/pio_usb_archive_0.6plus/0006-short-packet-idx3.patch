@@ -1,0 +1,18 @@
+--- a/src/pio_usb.c	2026-09-10 21:17:54
++++ b/src/pio_usb.c	2026-09-10 21:20:40
+@@ -323,10 +323,11 @@
+         busy_wait_at_least_cycles(turnaround_in_cycle); // wait for turnaround for LS only
+       }
+ 
+-      // 2 字节应答包（NAK/STALL）同样会被锁偏破坏，而下面的重对齐只覆盖
+-      // idx>=4 的数据包；短包最终 return -1，由调用方读 usb_rx_buffer[1]
+-      // 判断类型，所以把恢复结果写回缓冲。
+-      if (idx == 2) {
++      // 短包同样会被锁偏破坏，而下面的重对齐只覆盖 idx>=4 的数据包。
++      // 这里覆盖 idx==2（NAK/STALL）与 idx==3（数据包只解出 1 个数据字节，
++      // 此时既够不到 idx>=4 的重对齐、也不在 idx==2 的短包分支里 —— 是个
++      // 会被漏掉的洞）。恢复结果写回缓冲，由调用方读 usb_rx_buffer[1] 判断。
++      if (idx >= 2 && idx <= 3) {
+         uint8_t const fixed = pio_usb_recover_short_packet(usb_rx_buffer);
+         if (fixed != 0) {
+           usb_rx_buffer[1] = fixed;

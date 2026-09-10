@@ -1,0 +1,161 @@
+--- a/src/pio_usb.c
++++ b/src/pio_usb.c
+@@ -239,7 +239,11 @@
+     turnaround_in_cycle = 6 * pp->clk_div_ls_tx.div_int; // 1.5 bit time
+   }
+ 
+-  if (!pio_usb_bus_wait_for_rx_start(pp)) {
++  // 调试探针：记录"响应是否真的开始"。res=-1 且没有字节时，靠这一位区分
++  // "对端根本没应答（EOP 标志其实是自己 token 的残留）"与"响应开始了但没解出字节"
++  bool const rx_started = pio_usb_bus_wait_for_rx_start(pp);
++  pio_usb_dbg_started = rx_started ? 1 : 0;
++  if (!rx_started) {
+     return -1;
+   }
+ 
+--- a/src/pio_usb.h
++++ b/src/pio_usb.h
+@@ -29,6 +29,9 @@
+ int pio_usb_get_in_data(endpoint_t *ep, uint8_t *buffer, uint8_t len);
+ int pio_usb_set_out_data(endpoint_t *ep, const uint8_t *buffer, uint8_t len);
+ 
++// 事务失败探针（本地补丁 0003）的声明在 pio_usb_ll.h（含样本类型定义），
++// 使用方直接 #include "pio_usb_ll.h"。
++
+ #ifdef __cplusplus
+  }
+ #endif
+--- a/src/pio_usb_host.c
++++ b/src/pio_usb_host.c
+@@ -266,7 +266,52 @@
+ static int usb_setup_transaction(pio_port_t *pp, endpoint_t *ep);
+ static int usb_in_transaction(pio_port_t *pp, endpoint_t *ep);
+ static int usb_out_transaction(pio_port_t *pp, endpoint_t *ep);
++
++//--------------------------------------------------------------------
++// 事务失败探针（本地补丁 0003，配套 hid-debugger 的 [PIODBG] 日志行）
++//
++// 动机：以下两种故障在 TinyUSB 日志里都表现为 "0 bytes: FAILED"，无法区分：
++//   a) 设备/Hub 根本没应答（started=0，事务层 res=-2 或 -1）
++//   b) 应答开始了，但接收端收不出有效字节（started=1，sync≠0x80/pid 异常）
++// 两者的修法完全不同，所以要能在现场分清。
++//
++// 每种事务各留一份"未被应用读取过"的样本：SETUP 的失败次数远少于 IN（每帧
++// 三个 HID 端点都在失败），共用一组全局量会让 SETUP 的样本在应用读到之前
++// 就被覆盖。应用侧读完对应位后清 pio_usb_dbg_pending。
++//--------------------------------------------------------------------
++#define PIO_USB_DBG_KINDS 3
++
++// pio_usb_dbg_sample_t 定义在 pio_usb_ll.h（应用侧也要用同一份布局）
++
++volatile pio_usb_dbg_sample_t pio_usb_dbg_last[PIO_USB_DBG_KINDS];
++volatile uint8_t pio_usb_dbg_pending;     // bit k 置位 = 该类型有未读取样本
++volatile uint8_t pio_usb_dbg_started;     // 由 pio_usb.c 写入，capture 取用
++volatile uint32_t pio_usb_dbg_attempt[3]; // 各类型累计尝试次数 IN/OUT/SETUP
++volatile uint32_t pio_usb_dbg_seq;        // 失败样本总序号
++
++static inline void __not_in_flash_func(pio_usb_dbg_reset_rx)(pio_port_t *pp) {
++  pp->usb_rx_buffer[0] = 0;  // 清掉上一次的残留，否则失败探针可能读到陈旧字节
++  pp->usb_rx_buffer[1] = 0;
++}
+ 
++static inline void __not_in_flash_func(pio_usb_dbg_capture)(
++    const pio_port_t *pp, const endpoint_t *ep, uint8_t kind, int res) {
++  uint8_t const bit = (uint8_t)(1u << kind);
++  pio_usb_dbg_seq++;
++  if (pio_usb_dbg_pending & bit) {
++    return;  // 该类型已有未读取样本，不覆盖（应用读完会清位）
++  }
++  pio_usb_dbg_last[kind].kind = kind;
++  pio_usb_dbg_last[kind].ep = ep->ep_num;
++  pio_usb_dbg_last[kind].res = (int8_t)res;
++  pio_usb_dbg_last[kind].started = pio_usb_dbg_started;
++  pio_usb_dbg_last[kind].sync = pp->usb_rx_buffer[0];
++  pio_usb_dbg_last[kind].pid = pp->usb_rx_buffer[1];
++  pio_usb_dbg_last[kind].retry = (uint8_t)ep->failed_count;
++  pio_usb_dbg_last[kind].seq = pio_usb_dbg_seq;
++  pio_usb_dbg_pending |= bit;
++}
++
+ void __not_in_flash_func(pio_usb_host_frame)(void) {
+   if (!timer_active) {
+     return;
+@@ -551,6 +596,7 @@
+ static int __no_inline_not_in_flash_func(usb_in_transaction)(pio_port_t *pp,
+                                                              endpoint_t *ep) {
+   int res = 0;
++  pio_usb_dbg_attempt[0]++;
+   uint8_t expect_pid = (ep->data_id == 1) ? USB_PID_DATA1 : USB_PID_DATA0;
+ 
+   pio_usb_bus_prepare_receive(pp);
+@@ -584,6 +630,7 @@
+     if ((pp->pio_usb_rx->irq & IRQ_RX_COMP_MASK) == 0) {
+       res = -2;
+     }
++    pio_usb_dbg_capture(pp, ep, 0, res);
+ 
+     if (++ep->failed_count >= TRANSACTION_MAX_RETRY) {
+       pio_usb_ll_transfer_complete(ep, PIO_USB_INTS_ENDPOINT_ERROR_BITS); // failed after 3 consecutive retries
+@@ -604,6 +651,7 @@
+ static int __no_inline_not_in_flash_func(usb_out_transaction)(pio_port_t *pp,
+                                                               endpoint_t *ep) {
+   int res = 0;
++  pio_usb_dbg_attempt[1]++;
+ 
+   uint16_t const xact_len = pio_usb_ll_get_transaction_len(ep);
+ 
+@@ -626,6 +674,7 @@
+     pio_usb_ll_transfer_complete(ep, PIO_USB_INTS_ENDPOINT_STALLED_BITS);
+   } else {
+     res = -1;
++    pio_usb_dbg_capture(pp, ep, 1, res);
+     if (++ep->failed_count >= TRANSACTION_MAX_RETRY) {
+       pio_usb_ll_transfer_complete(ep, PIO_USB_INTS_ENDPOINT_ERROR_BITS);
+     }
+@@ -645,8 +694,10 @@
+ static int __no_inline_not_in_flash_func(usb_setup_transaction)(
+     pio_port_t *pp,  endpoint_t *ep) {
+   int res = 0;
++  pio_usb_dbg_attempt[2]++;
+ 
+   // Setup token
++  pio_usb_dbg_reset_rx(pp);  // 失败探针要读首字节，先清残留（本函数只清 [1]）
+   pio_usb_bus_prepare_receive(pp);
+   pio_usb_bus_send_token(pp, USB_PID_SETUP, ep->dev_addr, 0);
+ 
+@@ -664,6 +715,7 @@
+     pio_usb_ll_transfer_complete(ep, PIO_USB_INTS_ENDPOINT_COMPLETE_BITS);
+   } else {
+     res = -1;
++    pio_usb_dbg_capture(pp, ep, 2, res);
+     ep->data_id = USB_PID_SETUP; // retry setup
+     if (++ep->failed_count >= TRANSACTION_MAX_RETRY) {
+       pio_usb_ll_transfer_complete(ep, PIO_USB_INTS_ENDPOINT_ERROR_BITS);
+--- a/src/pio_usb_ll.h
++++ b/src/pio_usb_ll.h
+@@ -248,3 +248,25 @@
+   uint8_t const ep_idx = ((ep_address & 0x7f) << 1) | (ep_address >> 7);
+   return PIO_USB_ENDPOINT(ep_idx);
+ }
++
++//--------------------------------------------------------------------
++// 事务失败探针（本地补丁 0003，定义在 pio_usb_host.c）
++// 每种事务各留一份未读取样本；应用侧读 pio_usb_dbg_last[k] 后清
++// pio_usb_dbg_pending 的对应位。判读说明见 pio_usb_host.c。
++//--------------------------------------------------------------------
++typedef struct {
++  uint8_t kind;     // 0=IN 1=OUT 2=SETUP
++  uint8_t ep;       // 端点号（含方向位）
++  int8_t res;       // -1: 有 EOP 但非 ACK/NAK/STALL；-2: 无 EOP
++  uint8_t started;  // 响应是否真的开始（wait_for_rx_start 结果）
++  uint8_t sync;     // 收到包首字节（正常 0x80 SYNC；0=什么都没收到）
++  uint8_t pid;      // PID 字节（ACK=0xD2 NAK=0x5A STALL=0x1E）
++  uint8_t retry;    // 失败时重试计数
++  uint32_t seq;     // 样本序号
++} pio_usb_dbg_sample_t;
++
++extern volatile pio_usb_dbg_sample_t pio_usb_dbg_last[3];
++extern volatile uint8_t pio_usb_dbg_pending;
++extern volatile uint8_t pio_usb_dbg_started;
++extern volatile uint32_t pio_usb_dbg_attempt[3];
++extern volatile uint32_t pio_usb_dbg_seq;

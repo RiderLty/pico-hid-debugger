@@ -28,7 +28,8 @@ PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显
 
 | 行格式 | 含义 |
 |--------|------|
-| `[BOOT]  system init: pico-hid-debugger uart=2000000 8N1` | 启动标记（开机第一条输出，先于任何 TinyUSB 日志；见到它即知本连接从系统启动起完整抓取） |
+| `[BOOT]  system init: pico-hid-debugger uart=2000000 8N1 tusb=0.18.0 hubpatch=1 piousb=9510f79` | 启动标记（开机第一条输出，先于任何 TinyUSB 日志；见到它即知本连接从系统启动起完整抓取）。`tusb=` 是实际链接的 TinyUSB 版本，`hubpatch=` 表示 hub 驱动韧性补丁是否生效，**`piousb=` 是 PIO-USB 子模块当前提交**——排查前先核对这三个值，避免"日志看着一样、其实刷的是上一版固件" |
+| `[PIODBG] kind=SETUP ep=00 res=-1 started=0 sync=01 pid=A5 retry=0 att=21111/20/39 seq=31` | **事务失败探针**（诊断用；三类事务各留一份不会被覆盖的样本，每类每 200ms 最多一行）。**判读看 `sync`/`pid`**：`sync=00 pid=00` = 真的什么都没收到（对端无应答）；非 0 但不像合法握手 = 收到了但**锁偏错帧**（把 `sync<<1\|carry` 还原即可，例：`01 A5` 就是 `80 D2` = SYNC+ACK）。`att=IN/OUT/SETUP` 为累计尝试次数 |
 | `[MOUNT] dev=%u vid=%04x pid=%04x` | 设备枚举完成（含 hub 设备自身） |
 | `[DEVDS] dev=%u vid=... bcdUSB=... cls=.. pkt0=... cfgs=...` | 设备描述符关键字段 |
 | `[DEVDS] dev=%u len=18 off=..: <hex>` | 设备描述符原始转储 |
@@ -70,18 +71,33 @@ PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显
 ## 构建
 
 ```bash
-./build.sh    # 一键构建：自动探测 SDK（../pico-sdk 或 ~/pico-sdk）
+git clone https://github.com/RiderLty/pico-hid-debugger.git
+cd pico-hid-debugger
+./build.sh    # 一键构建：自动初始化子模块 + 打补丁 + 探测 SDK（../pico-sdk 或 ~/pico-sdk）
 ```
+
+`build.sh` 会顺带完成两件初始化工作（幂等，可反复执行），因此 `git clone` 后无需任何手工配置：
+
+1. `git submodule update --init --recursive` —— 拉取 PIO-USB 库。`lib/pico_pio_usb` 是 **git 子模块**，锁定在上游提交 `5a37a66`；
+2. `./scripts/apply-patches.sh` —— 给子模块打上补丁（当前只有 SDK 2 构建兼容那一枚，见下）。
 
 或手动构建（需要 PICO_SDK_PATH、ARM 交叉编译器、CMake >= 3.13）：
 
 ```bash
 export PICO_SDK_PATH=/path/to/pico-sdk
 
+git submodule update --init --recursive
+./scripts/apply-patches.sh
+
 mkdir build && cd build
 cmake ..
 make -j$(nproc)
 ```
+
+> **关于 PIO-USB 版本（重要）**：本仓库把 `lib/pico_pio_usb` **固定在旧血脉（0.6.0 重写之前）的顶端提交 `9510f79`**，并**放弃低速（LS）设备支持**——因为上游 0.6.0 的重写在带来"低速经 hub 可用"的同时，破坏了"hub 上设备拔出"的处理（上游 issue [#149](https://github.com/sekigon-gonnoc/Pico-PIO-USB/issues/149)、[TinyUSB #2971](https://github.com/hathach/tinyusb/issues/2971) 报告人 bisect 出的正是那对提交）。`9510f79` 只比 0.5.3 发布版多 4 个提交，且**包含上游 `0f747aa` "retired all transferring endpoint if device is disconnected"** —— 即上游自己认定的"最后一个能正确处理 hub 拔出的提交"。
+> 为什么不是简单回退：旧血脉**从未**拿到 Pico SDK 2 的构建兼容（那两笔修复都在重写之后），因此有**一枚** `patches/pio_usb/0001-sdk2-compat.patch`（纯构建兼容，无语义改动，由 `./scripts/apply-patches.sh` 幂等应用；`git submodule update --checkout` 清掉后重跑即可，cmake 配置期也会检测并提示）。针对新血脉写的 9 枚补丁与整轮调查结论**已归档**在 [`patches/pio_usb_archive_0.6plus/`](patches/pio_usb_archive_0.6plus/)，全部说明见 [`patches/pio_usb/README.md`](patches/pio_usb/README.md)。
+>
+> **另一处补丁**（与上面无关，继续保留）：**SDK 捆绑的 TinyUSB 0.18.0**（`src/host/hub.c`）在 hub 端口变化流程里，任何一次传输失败就**永久放弃**（`hub_xfer_cb` 用 `TU_VERIFY` 提前返回 → 状态轮询不再入队；五处完成回调 `TU_ASSERT` 直接断言停摆），而 pio-usb 这类 HCD 出现事务级错误是常态。上游已在 **TinyUSB PR #2994**（0.19.0 起）改为失败即重新入队轮询。该补丁在 **configure 期自动**生成 `hub.c` 修正副本到 build 目录并替换源列表（与既有的 `hid_host.c` 三级日志补丁同一手法），**SDK 文件始终原样**；SDK 内 TinyUSB 升到 ≥ 0.19.0 后自动失效，无需手工步骤。
 
 可选：`UART_BAUD=921600 ./build.sh` 覆盖 UART 波特率（默认 2M，须与上位机一致且适配器支持）。
 
@@ -140,7 +156,11 @@ tools/
 index.html                # Web Serial 日志查看器（xterm.js + WebGL，[TUSB] 过滤）
 vendor/                   # xterm.js 及 WebGL/Fit 插件（第三方，vendored）
 lib/
-└── pico_pio_usb/         # PIO-USB 库（第三方）
+└── pico_pio_usb/         # PIO-USB 库（git 子模块，锁定旧血脉顶端 9510f79；放弃低速支持）
+patches/
+└── pio_usb/              # 上游未合并修复的补丁 + 说明（README.md）
+scripts/
+└── apply-patches.sh      # 幂等打补丁脚本（build.sh 会自动调用）
 ```
 
 ## 已知限制

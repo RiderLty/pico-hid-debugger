@@ -1,0 +1,18 @@
+--- a/src/pio_usb.c	2026-09-10 21:20:57
++++ b/src/pio_usb.c	2026-09-10 21:22:59
+@@ -161,7 +161,14 @@
+   // 1 bit-time = 4 CPU cycles * clkdiv (the TX SM runs 4 cycles per bit).
+   uint32_t const bit_cycles = 4u * (pp->low_speed ? pp->clk_div_ls_tx.div_int
+                                                   : pp->clk_div_fs_tx.div_int);
+-  busy_wait_at_least_cycles(4u * bit_cycles);
++  // 全速把这段等待从 4 bit-time 缩到 1：hub 这类"零中继延迟"的设备会在收到
++  // IN 令牌后约 2 bit-time 就开始应答（USB 2.0 §7.1.18 允许的最早值），而
++  // 调用方是在本函数返回之后才去 arm 接收机 —— 等得越久，越容易吃掉响应
++  // 开头的一个 bit。实测：hub 自己的控制管道 IN 解出来是 `01 97` 这种**非
++  // 均匀**错位（k=1..7 全代入无解 → 位移发生在包内部），30 次重试完全一致；
++  // 而经 hub 中继的设备应答晚 1~2 bit-time，从不失败 —— 与"上膛偏晚"吻合。
++  // 低速保持 4 bit-time（1.5Mbps 下仅约 2.7µs，且 LS 路径时序余量大得多）。
++  busy_wait_at_least_cycles((pp->low_speed ? 4u : 1u) * bit_cycles);
+ }
+ 
+ void __no_inline_not_in_flash_func(pio_usb_bus_send_token)(pio_port_t *pp,

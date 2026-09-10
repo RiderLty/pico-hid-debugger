@@ -47,6 +47,15 @@
 #define PICO_STR2(x) #x
 #define PICO_STR(x)  PICO_STR2(x)
 
+// 补丁在位标志由 CMake 依据实际打补丁情况传入（顶层 CMakeLists.txt），
+// 用于 [BOOT] 行自证版本：刷的到底是哪份固件，一眼可辨
+#ifndef TUSB_HUB_PATCHED
+#define TUSB_HUB_PATCHED 0
+#endif
+#ifndef PIO_USB_COMMIT
+#define PIO_USB_COMMIT "unknown"   // PIO-USB 子模块当前提交（顶层 CMakeLists.txt 读取）
+#endif
+
 /*------------- 主程序 -------------*/
 
 // 启动标记。必须在 core1 启动之前入队：它是本串第一条输出，此后才可能
@@ -54,10 +63,21 @@
 // 抓取，枚举过程无缺失。这是唯一的 core0 生产者调用（仅发生在
 // multicore_launch_core1 之前，SPSC 单生产者约束不被破坏）。
 static void boot_banner(void) {
-  char buf[96];
+  // 版本号自建：TinyUSB 的 TUSB_VERSION_STRING 是单层 TU_STRING 展开，主版本
+  // 会打印成宏名（"TUSB_VERSION_MAJOR.18.0"），用数值宏拼才可靠
+  char ver[16];
+  snprintf(ver, sizeof(ver), "%u.%u.%u", (unsigned)TUSB_VERSION_MAJOR,
+           (unsigned)TUSB_VERSION_MINOR, (unsigned)TUSB_VERSION_REVISION);
+
+  char buf[128];
+  // tusb= 实际链接的 TinyUSB 版本；hubpatch= 是否打了 hub 驱动韧性补丁；
+  // piousb= PIO-USB 子模块当前提交（本仓库固定为旧血脉顶端 9510f79）——
+  // 排查前先核对这三个值，避免"日志一样其实是上一版固件"
   int n = snprintf(buf, sizeof(buf) - 2,
-                   "[BOOT]  system init: pico-hid-debugger uart=%s 8N1\r\n",
-                   PICO_STR(UARTO_BAUDRATE));
+                   "[BOOT]  system init: pico-hid-debugger uart=%s 8N1"
+                   " tusb=%s hubpatch=%u piousb=%s\r\n",
+                   PICO_STR(UARTO_BAUDRATE), ver, (unsigned)TUSB_HUB_PATCHED,
+                   PIO_USB_COMMIT);
   if (n > 0) {
     if (n > (int)sizeof(buf) - 2) n = (int)sizeof(buf) - 2;
     uart_output_send(buf, (uint8_t)n);

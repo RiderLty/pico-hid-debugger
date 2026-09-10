@@ -1,0 +1,86 @@
+--- a/src/pio_usb.c
++++ b/src/pio_usb.c
+@@ -40,6 +40,34 @@
+ // Bus functions
+ //--------------------------------------------------------------------+
+ 
++// 恢复被"锁偏 k bit"破坏的 2 字节应答包（SYNC + 握手 PID）。
++//
++// 上游 #97（2023 年至今 open）的现场就是 0x80 0xD2（SYNC+ACK）被解成 0x01 0xA5，
++// PR #211 为此加了确定性重对齐，但只覆盖 receive_packet_and_handshake 里
++// idx>=4 的数据包——2 字节握手包（ACK/NAK/STALL）走的是 wait_handshake，
++// 认不出就返回 0（"invalid handshake"），SETUP/OUT 于是被误判成"对端没应答"，
++// 端点随后卡死。实测 RP2350 + hub 下的 SETUP 失败正是这个形态：
++// [PIODBG] kind=SETUP res=-1 sync=01 pid=A5。
++//
++// 恢复方式与 PR #211 同一套：按 SYNC(0x80) 标记逐个试位移 k，再用 PID 的
++// 校验半字节确认。注意进位方向：被破坏的字节 b[i] = orig[i]<<k | orig[i-1]>>(8-k)
++// 形式的左移，所以 orig[i] = b[i]>>k | b[i-1]<<(8-k)；包首之前是空闲态（J=1），
++// 用它补 b[0] 的高位。返回恢复出的 PID，0 表示无法恢复。
++static uint8_t __not_in_flash_func(pio_usb_recover_short_packet)(
++    const uint8_t *buf) {
++  for (uint8_t k = 1; k <= 7; k++) {
++    uint8_t const sync = (uint8_t)((buf[0] >> k) | (0xFFu << (8 - k)));
++    if (sync != USB_SYNC) {
++      continue;
++    }
++    uint8_t const pid = (uint8_t)((buf[1] >> k) | (buf[0] << (8 - k)));
++    if (((pid >> 4) ^ (pid & 0x0f)) == 0x0f) { // PID 校验半字节合法
++      return pid;
++    }
++  }
++  return 0;
++}
++
+ static void __no_inline_not_in_flash_func(send_pre)(pio_port_t *pp) {
+   // send PRE token in full-speed
+   pp->low_speed = false;
+@@ -212,7 +240,10 @@
+   }
+ 
+   if (idx != 2 || pp->usb_rx_buffer[0] != USB_SYNC) {
+-    return 0; // invalid handshake
++    // 锁偏恢复：SETUP/OUT 的应答（ACK/NAK/STALL）是 2 字节包，PR #211 的重对齐
++    // 覆盖不到这里。不恢复就会把"ACK 被解成 0x01 0xA5"当成对端无应答，
++    // 事务判失败、端点卡死（实测 hub 的 GetPortStatus 即此）。
++    return pio_usb_recover_short_packet(pp->usb_rx_buffer); // 0 = 确实没收到合法握手
+   }
+ 
+   return pp->usb_rx_buffer[1];
+@@ -239,12 +270,16 @@
+     turnaround_in_cycle = 6 * pp->clk_div_ls_tx.div_int; // 1.5 bit time
+   }
+ 
+-  // 调试探针：记录"响应是否真的开始"。res=-1 且没有字节时，靠这一位区分
+-  // "对端根本没应答（EOP 标志其实是自己 token 的残留）"与"响应开始了但没解出字节"
++  // 调试探针：记录"响应是否真的开始"
+   bool const rx_started = pio_usb_bus_wait_for_rx_start(pp);
+   pio_usb_dbg_started = rx_started ? 1 : 0;
+   if (!rx_started) {
+-    return -1;
++    // 不在这里放弃：START 标志可能被 start_receive 的清除竞态吃掉，而响应
++    // 的字节已经由解码器送进 FIFO（DECODER_TRIGGER 是另一个独立标志）。
++    // 提前 return 会让后面的重对齐/短包恢复全部失效，事务被判"对端没应答"。
++    // 真的没有数据时，下面的收包循环会在 7µs 后超时，行为与原来一致。
++    // 实测现场：hub 上报拔出后 GetPortStatus 的 SETUP 已能通过（短包重对齐
++    // 生效），但数据阶段（控制管道 IN）仍以 0 字节失败，即栽在这里。
+   }
+ 
+   // Timing Critical: use local variable to reduce de-reference
+@@ -286,6 +321,16 @@
+       // Timing critical: per USB specs, handshake must be sent within 2-7 bit-time strictly
+       if (turnaround_in_cycle) {
+         busy_wait_at_least_cycles(turnaround_in_cycle); // wait for turnaround for LS only
++      }
++
++      // 2 字节应答包（NAK/STALL）同样会被锁偏破坏，而下面的重对齐只覆盖
++      // idx>=4 的数据包；短包最终 return -1，由调用方读 usb_rx_buffer[1]
++      // 判断类型，所以把恢复结果写回缓冲。
++      if (idx == 2) {
++        uint8_t const fixed = pio_usb_recover_short_packet(usb_rx_buffer);
++        if (fixed != 0) {
++          usb_rx_buffer[1] = fixed;
++        }
+       }
+ 
+       if (handshake == USB_PID_ACK) {
