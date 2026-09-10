@@ -108,15 +108,17 @@ python3 tools/uart_monitor.py -p /dev/tty.usbserialXXXX -b 2000000  # 指定串�
 
 ### Web 日志查看器
 
-根目录的 [index.html](index.html) 是基于 Web Serial API 的网页查看器（Chrome/Edge，需 https 或 localhost）：
+根目录的 [index.html](index.html) 是基于 Web Serial + **xterm.js（WebGL 渲染，GPU 加速）** 的终端式查看器（Chrome/Edge，需 https 或 localhost；库文件已 vendor 在 `vendor/`，无需联网）：
 
 ```bash
 python3 -m http.server   # 工程根目录运行，浏览器访问 http://localhost:8000/
 ```
 
-- 过滤选择：全部日志 / 仅 `[TUSB]` / 排除 `[TUSB]`，切换即时生效；
+- 过滤选择：全部日志 / 仅 `[TUSB]` / 排除 `[TUSB]`，切换即时重写终端缓冲；
+- 终端级跟随语义：贴底时自动跟随输出，上滚查看历史时新输出不拖动视口，"回到底部"角标一键恢复；
 - 自动重连：授权一次后，设备断开重插（含刷固件）会在重枚举瞬间自动恢复连接，全程无需再次确认；
-- 断开重连后的半行由行缓冲自动拼接；日志按 TAG 着色，上限 8000 行。
+- WebGL 不可用时自动回退 DOM 渲染器；`?renderer=dom` 可强制禁用 WebGL；
+- 日志按 TAG 用 ANSI 着色，模型上限 50000 行（导出/过滤的数据源），导出为带过滤模式与时间戳的 `.log` 文件。
 
 ## 目录结构
 
@@ -130,7 +132,8 @@ src/
 └── CMakeLists.txt        # 构建配置
 tools/
 └── uart_monitor.py       # 上位机串口监视脚本
-index.html                # Web Serial 日志查看器（自动重连 / [TUSB] 过滤）
+index.html                # Web Serial 日志查看器（xterm.js + WebGL，[TUSB] 过滤）
+vendor/                   # xterm.js 及 WebGL/Fit 插件（第三方，vendored）
 lib/
 └── pico_pio_usb/         # PIO-USB 库（第三方）
 ```

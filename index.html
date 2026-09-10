@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pico-hid-debugger 日志查看器</title>
+<link rel="stylesheet" href="vendor/xterm.min.css">
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -32,26 +33,16 @@
   #btnExport { margin-left: auto; }
   #count { font-size: 12px; color: #8b949e; }
   #logwrap { position: relative; flex: 1; min-height: 0; }
-  /* 虚拟滚动：行高固定 18px，超宽行横向滚动（不换行）。
-     overflow-anchor 必须关闭：浏览器的滚动锚定会为占位高度变化
-     自动补偿 scrollTop，与程序化贴底相互打架造成漂移 */
-  #log {
-    position: relative; height: 100%; overflow: auto; overflow-anchor: none;
-    font: 12px/18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  }
-  #padTop, #padBot { width: 1px; }
-  #rows { width: max-content; min-width: 100%; }
-  #rows div { height: 18px; line-height: 18px; white-space: pre; }
-  #rows .t-tusb  { color: #8b949e; }                 /* TinyUSB 内部日志：灰 */
-  #rows .t-hid   { color: #a5d6ff; }                 /* 报文：蓝 */
-  #rows .t-mount { color: #7ee787; }                 /* 挂载/拔出：绿 */
-  #rows .t-err   { color: #ffa198; }                 /* 错误/丢弃：红 */
+  #term { position: absolute; inset: 0; }
   #hint { padding: 4px 12px 10px; color: #e3b341; font-size: 13px; }
   #bottomChip {
     position: absolute; right: 16px; bottom: 14px; display: none;
     background: #1f6feb; color: #fff; border: none; border-radius: 14px;
     padding: 5px 14px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.5);
   }
+  /* xterm 视口滚动条细化 */
+  .xterm-viewport::-webkit-scrollbar { width: 8px; }
+  .xterm-viewport::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
 </style>
 </head>
 <body>
@@ -77,44 +68,39 @@
 </header>
 <div id="hint" style="display:none"></div>
 <div id="logwrap">
-  <div id="log">
-    <div id="padTop"></div>
-    <div id="rows"></div>
-    <div id="padBot"></div>
-  </div>
+  <div id="term"></div>
   <button id="bottomChip">↓ 回到底部</button>
 </div>
 
+<script src="vendor/xterm.min.js"></script>
+<script src="vendor/addon-webgl.min.js"></script>
+<script src="vendor/addon-fit.min.js"></script>
 <script>
 'use strict';
-const MAX_LINES = 50000;        // 模型上限（虚拟滚动，DOM 只渲染可见窗口）
-const ROW_H = 18;               // 单行像素高，须与 CSS 一致
-const OVERSCAN = 20;            // 视口上下各多渲染的行数
+const MAX_LINES = 50000;        // 内存模型与 xterm 回滚上限
 const KEY_PORT = 'pico-hid-debugger.portKey';
 const KEY_BAUD = 'pico-hid-debugger.baud';
 
 const $ = id => document.getElementById(id);
-const logEl = $('log'), rowsEl = $('rows'), padTop = $('padTop'), padBot = $('padBot');
-const statusEl = $('status'), countEl = $('count');
+const termEl = $('term'), statusEl = $('status'), countEl = $('count');
 const btnConnect = $('btnConnect'), btnPick = $('btnPick'), btnClear = $('btnClear');
 const btnExport = $('btnExport'), filterSel = $('filter'), baudSel = $('baud');
-const autoChk = null, chip = $('bottomChip');
-const hintEl = $('hint');
+const chip = $('bottomChip'), hintEl = $('hint');
 
 let port = null;                // 当前使用的 SerialPort
 let portKey = '';               // "vid:pid" 标识，localStorage 记忆
 let running = false;            // 读循环是否活跃
 let opening = false;            // openPort 并发防护（事件与看门狗可能同时触发）
 let wantConnected = false;      // 是否期望保持连接（手动断开后关闭自动重连）
-let baud = 921600;
+let baud = 2000000;
 let currentReader = null;
 let lineBuf = '';               // 跨 read() 的半行缓冲
 let allLines = [];              // 全量模型：[{cls, text}]，导出与过滤切换的数据源
-let viewLines = [];             // 当前过滤视图（虚拟滚动的渲染源）
-let follow = true;              // 跟随滚动（贴底）
-let lastPinTop = -1;            // 最近一次程序化贴底后的 scrollTop（区分用户滚动）
-let missCount = 0;              // 非跟随期间新到的行数
-let renderScheduled = false;
+let viewLines = [];             // 当前过滤视图
+let pending = [];               // 待 rAF 批量写入 xterm 的 ANSI 行
+let writeScheduled = false;
+let atBottom = true;            // xterm 视口是否贴底（贴底时自动跟随输出）
+let missCount = 0;              // 离开底部期间新到的行数
 
 // ---------------------------------------------------------------- 环境检查
 if (!('serial' in navigator)) {
@@ -124,19 +110,71 @@ if (!('serial' in navigator)) {
     + '可在工程目录运行 python3 -m http.server 后访问 http://localhost:8000/）。';
   btnConnect.disabled = btnPick.disabled = true;
 }
-
-// ---------------------------------------------------------------- 工具
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-const keyOf = p => { try { const i = p.getInfo();
-  return (i.usbVendorId || 0).toString(16) + ':' + (i.usbProductId || 0).toString(16);
-} catch { return '?'; } };
-
-function setStatus(text, cls) {
-  statusEl.textContent = text;
-  statusEl.className = cls || '';
+if (typeof Terminal === 'undefined') {
+  hintEl.style.display = 'block';
+  hintEl.textContent = 'vendor/ 下的 xterm 库文件缺失，请重新检出仓库。';
 }
 
-// 行分类：配色 + 过滤判定
+// ---------------------------------------------------------------- xterm
+let term = null, fitAddon = null;
+
+function initTerm() {
+  try {
+    term = new Terminal({
+      scrollback: MAX_LINES,
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      fontSize: 12,
+      lineHeight: 1.2,
+      cursorBlink: false,
+      cursorInactiveStyle: 'none',
+      convertEol: false,
+      theme: {
+        background: '#0d1117', foreground: '#c9d1d9',
+        cursor: 'transparent', selectionBackground: '#264f78',
+      },
+    });
+    // 三个库的 UMD 挂载方式不同：xterm 展开挂载（window.Terminal 即类），
+    // fit/webgl 为命名空间对象（window.FitAddon.FitAddon 才是类），做兼容
+    fitAddon = new (typeof FitAddon === 'function' ? FitAddon : FitAddon.FitAddon)();
+    term.open(termEl);
+    term.loadAddon(fitAddon);
+    fitAddon.fit();
+  } catch (err) {
+    hintEl.style.display = 'block';
+    hintEl.textContent = '终端初始化失败: ' + (err && err.message || err);
+    return;
+  }
+
+  // WebGL 渲染器（GPU 加速）延迟异步加载：页面先以 DOM 渲染器立即可用。
+  // WebGL 上下文创建在受限 GPU 环境可能长时间挂起，不能放在初始化关键路径上。
+  // 失败或上下文丢失时自动回退 DOM 渲染。?renderer=dom 可强制禁用 WebGL。
+  setTimeout(() => {
+    try {
+      if (new URLSearchParams(location.search).get('renderer') === 'dom') return;
+      const probe = document.createElement('canvas');
+      if (!(probe.getContext('webgl2') || probe.getContext('webgl'))) return;
+      const WACtor = typeof WebglAddon === 'function' ? WebglAddon : WebglAddon.WebglAddon;
+      const gl = new WACtor();
+      gl.onContextLoss(() => { try { gl.dispose(); } catch {} });
+      term.loadAddon(gl);
+    } catch { /* WebGL 不可用：继续用默认渲染器 */ }
+  }, 200);
+
+  // xterm 语义：视口贴底时新输出自动跟随；用户上滚后输出不再拖动视口。
+  // 这里只负责检测"是否贴底"，驱动回到底部角标
+  const vp = termEl.querySelector('.xterm-viewport');
+  if (vp) {
+    vp.addEventListener('scroll', () => {
+      const b = term.buffer.active;
+      const bottom = b.viewportY + term.rows >= b.length;
+      if (bottom && !atBottom) { atBottom = true; missCount = 0; chip.style.display = 'none'; }
+      else if (!bottom && atBottom) { atBottom = false; chip.style.display = 'block'; }
+    });
+  }
+  new ResizeObserver(() => { try { fitAddon.fit(); } catch {} }).observe($('logwrap'));
+}
+
+// 行分类 → ANSI 着色（xterm 无 CSS 类，用 SGR 序列）
 function classify(text) {
   if (text.startsWith('[TUSB]'))  return 't-tusb';
   if (text.startsWith('[BOOT]'))  return 't-mount';
@@ -146,80 +184,57 @@ function classify(text) {
   if (text.startsWith('[HID]') || text.startsWith('[HID+]'))   return 't-hid';
   return '';
 }
+function ansiWrap(cls, text) {
+  switch (cls) {
+    case 't-tusb':  return '\x1b[90m' + text + '\x1b[0m';
+    case 't-hid':   return '\x1b[36m' + text + '\x1b[0m';
+    case 't-mount': return '\x1b[32m' + text + '\x1b[0m';
+    case 't-err':   return '\x1b[91m' + text + '\x1b[0m';
+    default:        return text;
+  }
+}
 const passFilter = cls =>
   filterSel.value === 'all' ? true :
   filterSel.value === 'tusb' ? cls === 't-tusb' : cls !== 't-tusb';
 
-// ---------------------------------------------------------------- 虚拟滚动渲染
-function scheduleRender() {
-  if (renderScheduled) return;
-  renderScheduled = true;
-  requestAnimationFrame(() => { renderScheduled = false; renderWindow(); });
-}
-
-// 行 DOM 池：复用节点只换文本/类名，避免每帧重建 + GC
-const rowPool = [];
-
-function renderWindow() {
-  const total = viewLines.length;
-  const vh = logEl.clientHeight;
-  let start, end;
-  if (follow) {
-    // 跟随：直接定位最末窗口，无需读取滚动位置
-    end = total;
-    start = Math.max(0, total - Math.ceil(vh / ROW_H) - OVERSCAN);
-  } else {
-    const st = logEl.scrollTop;
-    start = Math.max(0, Math.floor(st / ROW_H) - OVERSCAN);
-    end = Math.min(total, Math.ceil((st + vh) / ROW_H) + OVERSCAN);
-  }
-
-  padTop.style.height = (start * ROW_H) + 'px';
-  padBot.style.height = ((total - end) * ROW_H) + 'px';
-  const need = end - start;
-  while (rowPool.length < need) {
-    const div = document.createElement('div');
-    rowsEl.appendChild(div);
-    rowPool.push(div);
-  }
-  while (rowPool.length > need) rowPool.pop().remove();
-  for (let i = 0; i < need; i++) {
-    const div = rowPool[i], ln = viewLines[start + i];
-    if (div._cls !== ln.cls) { div._cls = ln.cls; div.className = ln.cls; }
-    if (div._text !== ln.text) { div._text = ln.text; div.textContent = ln.text; }
-  }
-
-  // 关键顺序：先写占位高度、最后设置滚动位置，避免被旧 scrollHeight 截断
-  if (follow && total) {
-    logEl.scrollTop = logEl.scrollHeight;
-    lastPinTop = logEl.scrollTop;     // 记录贴底点，供 scroll 事件区分用户滚动
-  }
-
-  if (!follow && missCount) chip.textContent = '↓ 回到底部（+' + missCount + '）';
-  countEl.textContent = total + ' 行';
+// ---------------------------------------------------------------- 输出
+function scheduleFlush() {
+  if (writeScheduled) return;
+  writeScheduled = true;
+  requestAnimationFrame(() => {
+    writeScheduled = false;
+    if (term && pending.length) {
+      term.write(pending.join('\r\n') + '\r\n');
+      pending = [];
+    }
+    if (!atBottom) chip.textContent = '↓ 回到底部（+' + missCount + '）';
+    countEl.textContent = viewLines.length + ' 行';
+  });
 }
 
 function appendLine(text) {
   const cls = classify(text);
   allLines.push({ cls, text });
   if (passFilter(cls)) {
-    viewLines.push(allLines[allLines.length - 1]);
-    if (follow) scheduleRender();
-    else { missCount++; chip.textContent = '↓ 回到底部（+' + missCount + '）'; }
+    pending.push(ansiWrap(cls, text));
+    viewLines.push(allLines[allLines.length - 1]);   // 导出/过滤切换的数据源
   }
-  // 超上限时批量截断头部（逐条 shift 为 O(n)，高频下代价大）
+  if (!atBottom) missCount++;
+  // 超上限时批量截断模型头部（逐条 shift 为 O(n)，高频下代价大）；
+  // xterm 自身回滚由 scrollback 配置独立管理
   if (allLines.length > MAX_LINES + 2000)
     allLines.splice(0, allLines.length - MAX_LINES);
   if (viewLines.length > MAX_LINES + 2000)
     viewLines.splice(0, viewLines.length - MAX_LINES);
+  scheduleFlush();
 }
 
-function rebuildView() {
-  viewLines = filterSel.value === 'all'
-    ? allLines.slice()
-    : allLines.filter(l => passFilter(l.cls));
-  follow = true; missCount = 0; chip.style.display = 'none';
-  scheduleRender();
+// 过滤切换 / 清空后重写终端内容
+function rebuildTerm(lines) {
+  term.reset();
+  atBottom = true; missCount = 0; chip.style.display = 'none';
+  if (lines.length) term.write(lines.map(l => ansiWrap(l.cls, l.text)).join('\r\n') + '\r\n');
+  countEl.textContent = lines.length + ' 行';
 }
 
 // ---------------------------------------------------------------- 字节流 → 行
@@ -304,6 +319,18 @@ async function closePort() {
   btnConnect.textContent = '连接串口';
 }
 
+// ---------------------------------------------------------------- 工具
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const keyOf = p => { try { const i = p.getInfo();
+  return (i.usbVendorId || 0).toString(16) + ':' + (i.usbProductId || 0).toString(16);
+} catch { return '?'; } };
+
+function setStatus(text, cls) {
+  statusEl.textContent = text;
+  statusEl.className = cls || '';
+}
+
+// ---------------------------------------------------------------- 串口事件
 // 连接按钮：优先连已授权且匹配记忆标识的设备（免手势），否则弹选择框
 btnConnect.addEventListener('click', async () => {
   if (running) { closePort(); return; }
@@ -323,8 +350,8 @@ async function pickPort() {
   } catch { /* 用户取消 */ }
 }
 
-// 断开/重连事件：快速通道。授权持久化（requestPort 一次即可），
-// 设备重插触发 connect 后直接 open，全程无需用户手势。
+// 断开/重连：快速通道走 connect 事件，兜底走 100ms 看门狗轮询
+// （授权持久化：requestPort 一次即可，重连全程无需用户手势）
 navigator.serial?.addEventListener('disconnect', e => {
   if (e.port !== port) return;
   running = false;                       // 读循环随即报错退出
@@ -337,8 +364,6 @@ navigator.serial?.addEventListener('connect', e => {
   openPort(e.port);
 });
 
-// 重连看门狗：不依赖 connect 事件（部分平台/时序下事件不可靠）。
-// wantConnected 期间每 100ms 查一次授权端口表，记忆设备一出现立即重连。
 setInterval(async () => {
   if (running || opening || !wantConnected) return;
   try {
@@ -349,19 +374,17 @@ setInterval(async () => {
   } catch { /* getPorts 失败下轮再试 */ }
 }, 100);
 
-// ---------------------------------------------------------------- 交互杂项
-filterSel.addEventListener('change', rebuildView);
-
-baudSel.addEventListener('change', () => {
-  baud = +baudSel.value;
-  localStorage.setItem(KEY_BAUD, baud);
+// ---------------------------------------------------------------- 交互
+filterSel.addEventListener('change', () => {
+  viewLines = filterSel.value === 'all'
+    ? allLines.slice()
+    : allLines.filter(l => passFilter(l.cls));
+  rebuildTerm(viewLines);
 });
 
 btnClear.addEventListener('click', () => {
   allLines = []; viewLines = []; lineBuf = '';
-  rowPool.length = 0;                  // 同步清 DOM 池，防复用游离节点
-  rowsEl.textContent = ''; padTop.style.height = '0'; padBot.style.height = '0';
-  countEl.textContent = '0 行';
+  rebuildTerm([]);
 });
 
 // 导出当前过滤视图为 .log（\r\n 行尾，与固件输出一致），文件名含过滤模式
@@ -380,48 +403,23 @@ btnExport.addEventListener('click', () => {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 });
 
-// 滚动事件：区分"程序化贴底"与"用户滚动"。
-// 跟随期间的贴底赋值引发的 scroll 事件里，scrollTop 恒等于 lastPinTop
-// （日志入队只增加下方占位，不影响该值）；向上偏离它才是用户上滚。
-// 旧实现按"是否距底 1 行内"判断，日志高速入队时每帧必误判、跟随被关。
-logEl.addEventListener('scroll', () => {
-  if (follow) {
-    if (lastPinTop >= 0 && logEl.scrollTop < lastPinTop - 2) {
-      follow = false;                      // 用户上滚：退出跟随
-      chip.style.display = 'block';
-      scheduleRender();
-    }
-    return;                                // 贴底引发的事件：忽略
-  }
-  // 非跟随：用户滚回底部附近则恢复跟随
-  const total = viewLines.length;
-  const distance = total * ROW_H - (logEl.scrollTop + logEl.clientHeight);
-  if (total && distance < ROW_H * 2) {
-    follow = true;
-    missCount = 0;
-    chip.style.display = 'none';
-    scheduleRender();
-  }
-});
-
-// 滚轮上滚立即退出跟随，不等 scroll 事件（避免与每帧贴底竞争）
-logEl.addEventListener('wheel', e => {
-  if (e.deltaY < 0 && follow) {
-    follow = false;
-    missCount = 0;
-    chip.style.display = 'block';
-    scheduleRender();
-  }
-}, { passive: true });
-
 chip.addEventListener('click', () => {
-  follow = true; missCount = 0;
+  term.scrollToBottom();
+  atBottom = true; missCount = 0;
   chip.style.display = 'none';
-  scheduleRender();
 });
+
+baudSel.addEventListener('change', () => {
+  baud = +baudSel.value;
+  localStorage.setItem(KEY_BAUD, baud);
+});
+
+// 调试探子（控制台可用：__debug.append('[HID] dev=2 ...') 验证渲染）
+window.__debug = { append: appendLine, term: () => term };
 
 // ---------------------------------------------------------------- 启动
 (async () => {
+  if (typeof Terminal !== 'undefined') initTerm();
   if (!('serial' in navigator)) return;
   baud = +(localStorage.getItem(KEY_BAUD) || 2000000);
   baudSel.value = String(baud);
