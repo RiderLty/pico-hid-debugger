@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 USB HID 设备调试器固件，运行于 **Raspberry Pi Pico 2 (RP2350)**。
 
-PIO-USB 端口（GPIO12/13）枚举插入的 USB 设备（含 Hub），挂载时经异步控制传输抓取并 dump：设备描述符、配置描述符（原始整块）、字符串描述符（语言 ID/厂商/产品/序列号）；HID 接口挂载时 dump 接口信息与报告描述符；运行时把每份 HID 报告按行 hexdump。**不做任何 HID 语义解析**——本固件是"所见即原始行为"的调试采集器。
+PIO-USB 端口（GPIO12/13）枚举插入的 USB 设备（含 Hub），挂载时经异步控制传输抓取并 dump：设备描述符、配置描述符（原始整块）、字符串描述符（语言 ID/厂商/产品/序列号）；HID 接口挂载时 dump 接口信息与报告描述符；运行时把每份 HID 报告按行 hexdump。**原始报文不做任何语义解释**——本固件首先是"所见即原始行为"的调试采集器。
+
+在其之上**叠加**一层语义解析：报文同时喂给 [hidkit](https://github.com/RiderLty/hidkit)（`lib/hidkit` 子模块，纯 C 解析库），事件以 `[HIDKIT]` 行输出、库内诊断以 `[HKDBG]` 行输出；Xbox 手柄这类没有 HID 接口的设备由 `lib/hidkit-tusb-xinput`（XInput 类驱动 + 归一化接线）接管后走同一个出口。这一层是纯附加的：原始 hexdump 一行不少，两个开关（`HIDKIT_APP_EVENTS`/`HIDKIT_LIB_DEBUG`）可分别关掉。
 
 原生 USB Device 栈禁用（`CFG_TUD_ENABLED=0`）：Pico 在上位机上不枚举任何设备，输出经硬件 UART0（**GPIO2=TX / GPIO3=RX，2000000bps 8N1**）。注意 RP2350 上 GPIO2/3 的 UART 复用在 FUNCSEL 11（`GPIO_FUNC_UART_AUX`），不是 RP2040 的 FUNC2。
 
@@ -44,8 +46,13 @@ tuh_task()                                      uart_output_flush(): 批量出�
      │ 描述符抓取状态机（异步控制传输链）
      │   DEV → CFG → LANG → Mfg → Prod → Ser
      ├ tuh_hid_mount_cb → itf 信息 + 报告描述符 dump + 订阅报文
+     │                    └ hidkit_app_mount() → hidkit_mount()（不认就不占槽位）
      ├ tuh_hid_report_received_cb → 报文 hexdump
-     ▼ 格式化文本行（emit / dump_hex）→ uart_output_send() 入队
+     │                    └ hidkit_app_report() → hidkit_report()
+     │                         └ hidkit_input_*（弱符号）→ [HIDKIT] 行
+     ├ tuh_hid_umount_cb → hidkit_app_umount()（库内先补发"全部抬起"）
+     ├ tuh_xinput_* [lib/hidkit-tusb-xinput] → hidkit_xinput_report() → 同一批出口
+     ▼ 格式化文本行（hid_app_emit / emit_tagged / hexdump）→ uart_output_send() 入队
         SPSC 字节块队列（critical_section 保护，core1 写 core0 读）
 ```
 
@@ -60,7 +67,7 @@ tuh_task()                                      uart_output_flush(): 批量出�
 
 每行 `\r\n` 结尾。行格式权威定义见 [README.md](README.md)「输出格式」一节。格式约定：
 
-- TAG 定宽：`[TAG]` 紧跟 TAG 本体，其后用空格补齐到第 8 列（`TAG_COL`）再输出内容——hexdump 内用 `%*s` 补位，其余 emit 行的 TAG 均为 5 字符 + 1 空格天然对齐。
+- TAG 定宽：`[TAG]` 紧跟 TAG 本体，其后用空格补齐到第 8 列（`TAG_COL`）再输出内容——hexdump 内用 `%*s` 补位，其余 emit 行的 TAG 均为 5 字符 + 1 空格天然对齐。**例外**：`[HIDKIT]`/`[HKDBG]`（6/5 字符）统一补到第 9 列（`hidkit_app.c` 的 `HK_TAG_COL`），两族行彼此对齐。
 - HEX 折行 dump 统一走 `hexdump()`：每行前缀含 `len=`（整块总长）与 `off=`（本行起始偏移），前缀用空格补齐到固定列 `HEX_COL`（40）后才输出数据，跨行数据列垂直对齐。`itf_num` 传 `-1` 省略 itf 字段（设备级描述符），报文与报告描述符传实际接口号。
 
 ## Key Files
@@ -68,12 +75,15 @@ tuh_task()                                      uart_output_flush(): 批量出�
 | File | Role |
 |------|------|
 | `src/pico_hid_debugger.c` | 入口：`main()`（core0：UART 初始化与输出循环）、`core1_main()`（core1：tuh 配置与任务循环） |
-| `src/hid_host_app.c/.h` | 信息采集模块：全部 tuh 回调、描述符抓取状态机（异步控制传输链）、hexdump 格式化 |
+| `src/hid_host_app.c/.h` | 信息采集模块：全部 tuh 回调、描述符抓取状态机（异步控制传输链）、hexdump 格式化；HID 三个回调在 dump 之后各多一步 `hidkit_app_*` 转发。`hid_app_emit()` 是全工程共用的行输出出口（非 static，hidkit_app.c 也用） |
+| `src/hidkit_app.c/.h` | **语义层接线**：实现 hidkit 的四个弱符号出口（`hidkit_input_*`）与库内诊断出口（`hidkit_debug_printf`）→ `[HIDKIT]`/`[HKDBG]` 行；维护 instance→槽位映射；**定义 `usbh_app_driver_get_cb()`** 转发 XInput 适配器的类驱动（该钩子全工程只能有一个定义，适配器刻意不定义） |
 | `src/uart_output.c/.h` | 跨核传输层：SPSC 字节块队列、UART0 初始化（GPIO2/3 @ 2000000）、core0 批量写出 |
 | `src/tusb_log.c/.h` | TinyUSB 内部日志桥接：`CFG_TUSB_DEBUG_PRINTF` 挂接 `tu_printf`，片段按行组装（core1 临界区防穿插），`[TUSB]` 头入队 |
-| `src/tusb_config.h` | TinyUSB 配置：仅 Host 栈（CFG_TUD_ENABLED=0），Host HID×16 + Hub，枚举缓冲 512，`CFG_TUSB_DEBUG=3` |
-| `src/CMakeLists.txt` | 构建目标，链接 pico_stdlib, pico_pio_usb, tinyusb_host；stdio UART/USB 显式关闭 |
+| `src/tusb_config.h` | TinyUSB 配置：仅 Host 栈（CFG_TUD_ENABLED=0），Host HID×16 + Hub + `CFG_TUH_XINPUT`，枚举缓冲 512，`CFG_TUSB_DEBUG=3`（SDK 命令行自带 `-DCFG_TUSB_DEBUG=0`，故这里先 `#undef` 再定义，否则每份 TU 都报 redefined） |
+| `src/CMakeLists.txt` | 构建目标，链接 pico_stdlib, pico_pio_usb, tinyusb_host, hidkit, hidkit_tusb_xinput；传 hidkit 容量宏（`HIDKIT_MAX_*` 4/4/4）与两个开关（`HIDKIT_DEBUG`、`HIDKIT_APP_EVENTS`）；stdio UART/USB 显式关闭 |
 | `CMakeLists.txt` | Top-level: sets board to `pico2`, includes Pico SDK |
+| `lib/hidkit/` | **语义解析核心**（git 子模块，独立开源仓库）。纯 C、零平台依赖、static 内存；报告描述符 → 字段表，报文 → 事件，出口是**弱符号函数**（`hidkit_input_*`）。**只读不改**：要升级就 checkout 子模块到新提交；缺陷与残余限制记在它自己的 `KNOWN_ISSUES.md`（目前 7 条已修：5 条移植时故意保留的描述符缺陷 + `Report Count = 0` 规范符合性 + 一条**移植引入的回归**：HID 手柄布局表曾被槽位守界挡住探测调用而恒不命中，真机表现为 `unhandled 054c:0ce6`，DS5 全不认识）。容量/策略宏见其 `src/hidkit_config.h` |
+| `lib/hidkit-tusb-xinput/` | **XInput 适配器**（git 子模块，独立开源仓库）：TinyUSB XInput 类驱动（移植件）+ 接线层（`tuh_xinput_*` → `hidkit_xinput_report()`）。同样**只读不改**。`CFG_TUH_XINPUT` 在 `src/tusb_config.h` 里打开（关掉则整个驱动编译掉） |
 | `lib/pico_pio_usb/` | PIO-USB 库，**git 子模块**锁定上游 sekigon-gonnoc/Pico-PIO-USB **旧血脉顶端 `9510f79`**（0.6.0 重写之前；含 `0f747aa` "retired all transferring endpoint if device is disconnected"）。**本仓库放弃低速支持换 hub 热插拔可靠**，版本对照与理由见 `patches/pio_usb/README.md`；`[BOOT]` 行的 `piousb=` 即该提交，排查前先核对。**不要直接改子模块里的文件**：需要的修改走 `patches/pio_usb/` + `scripts/apply-patches.sh`。**注意**：D+/D− 引脚（GPIO12/13）在应用代码 `pico_hid_debugger.c` 的 `pio_cfg.pin_dp` 显式配置——上游 `PIO_USB_DP_PIN_DEFAULT` 是 GPIO0，不要依赖库内默认值 |
 | `patches/pio_usb/` | 当前**只有一枚** `0001-sdk2-compat.patch`（旧血脉缺的 Pico SDK 2 构建兼容：本地 `pio_sm_set_jmp_pin` 与 SDK2 重名冲突 + 生成头缺 `pio_version` 字段）。**基线 = 子模块锁定提交 9510f79**。针对 0.6+ 血脉写的 9 枚补丁与整轮调查结论归档在 `patches/pio_usb_archive_0.6plus/`（当前不使用） |
 | `scripts/apply-patches.sh` | 幂等打补丁脚本（默认应用 / `--status` / `--revert`）；`build.sh` 与 CMake 配置期都会检查补丁是否在位 |
@@ -94,16 +104,19 @@ tuh_task()                                      uart_output_flush(): 批量出�
 
 ## Known Limitations
 
-1. **UART 带宽**：2Mbaud ≈ 200KB/s（120MHz 时钟下分频恰为整数，零波特率误差）。1kHz 鼠标全量输出（报文行 + 每报文 TUSB 日志）≈ 106KB/s，占 53%。更高流量用 `cmake -DUART_BAUD=` 提速（RP2350 UART 可跑 5Mbps+）或降 `CFG_TUSB_DEBUG`。队列满丢行计数，排空后 `[DROP]` 补报。
-2. 描述符抓取与 HID 驱动自身的控制传输（报告描述符请求等）共用设备控制通道，由 TinyUSB 排队串行化；抓取失败（如设备不支持字符串）仅 `[ERROR]`/跳过，不影响报文流。
-3. 多配置设备只 dump 配置 1；字符串非 ASCII 字符显示 `?`。
-4. 枚举信息只在挂载时抓取一次，运行中不会重复查询（设备描述符/字符串不会变化，属有意为之）。
-5. **PIO-USB 版本策略（重要）**：0.6.0 的重写带来低速支持、但破坏了 hub 上设备拔出（上游 issue #149 / TinyUSB #2971 报告人 bisect 到那对提交；上游自己认定最后一个能正确处理的是 `0f747aa`）。本仓库**固定旧血脉顶端 `9510f79` 并放弃低速支持**：`CMakeLists.txt` 会检查子模块仍是旧血脉（缺 `pio_usb_host_task` 即 `FATAL_ERROR`），`build.sh`/cmake 还会确保那枚 SDK-2 构建兼容补丁在位；`[BOOT]` 的 `piousb=` 用于核对实际刷入的提交。**另有一处与版本无关的补丁**：SDK 捆绑的 TinyUSB 0.18.0 hub 驱动一次传输失败就永久停摆（上游 PR #2994 / 0.19.0 才修好），由 configure 期生成 `hub.c` 副本补上（未打时症状：`hub_port_get_status_complete ... ASSERT FAILED` 后 hub 事件彻底断绝）。针对 0.6+ 血脉写的 9 枚补丁与整轮调查结论见 `patches/pio_usb_archive_0.6plus/`。
-6. **历史调查（已归档）**：为定位 0.6+ 血脉的 hub 拔出回归，曾在库内加过"事务失败探针"并输出 `[PIODBG]` 行（记录失败事务的原始接收字节、`started`、IN/OUT/SETUP 尝试次数；判读要点：`sync/pid` 非 0 但不像合法握手 = 收到了但**锁偏错帧**，如 `01 A5` 即 `80 D2`；`00/00` = 对端无应答）。**探针已从应用移除**，补丁与全部现场结论归档在 `patches/pio_usb_archive_0.6plus/`（含未走完的定向修思路）。`[BOOT]` 行现带 `tusb=`/`hubpatch=`/`piousb=`，**排查任何 USB 异常前先核对这三个值**（曾出现"两个固件都试过但日志一样"实为刷错固件的情况）。
+1. **UART 带宽**：2Mbaud ≈ 200KB/s（120MHz 时钟下分频恰为整数，零波特率误差）。1kHz 鼠标全量输出（报文行 + 每报文 TUSB 日志）≈ 106KB/s，占 53%；再叠 `[HIDKIT]` 事件行（约 40B/报文）约 140KB/s。更高流量用 `cmake -DUART_BAUD=` 提速（RP2350 UART 可跑 5Mbps+）、降 `CFG_TUSB_DEBUG`，或 `-DHIDKIT_APP_EVENTS=0`。队列满丢行计数，排空后 `[DROP]` 补报。
+2. **语义层只覆盖 hidkit 认识的设备**（boot 键鼠 / NKRO 键盘 / 描述符可解析的鼠标 / 布局表内手柄）。其余设备 `[HKDBG]` 报 `unhandled`、不占槽位，原始采集照旧——这是常态不是故障。**XInput 路径在本仓库只做过编译级验证**（本机没有 Xbox 手柄），握手时序与重订阅逻辑继承自同源实现（pico-hid-mapper 实测通过）。
+3. 描述符抓取与 HID 驱动自身的控制传输（报告描述符请求等）共用设备控制通道，由 TinyUSB 排队串行化；抓取失败（如设备不支持字符串）仅 `[ERROR]`/跳过，不影响报文流。
+4. 多配置设备只 dump 配置 1；字符串非 ASCII 字符显示 `?`。
+5. 枚举信息只在挂载时抓取一次，运行中不会重复查询（设备描述符/字符串不会变化，属有意为之）。
+6. **PIO-USB 版本策略（重要）**：0.6.0 的重写带来低速支持、但破坏了 hub 上设备拔出（上游 issue #149 / TinyUSB #2971 报告人 bisect 到那对提交；上游自己认定最后一个能正确处理的是 `0f747aa`）。本仓库**固定旧血脉顶端 `9510f79` 并放弃低速支持**：`CMakeLists.txt` 会检查子模块仍是旧血脉（缺 `pio_usb_host_task` 即 `FATAL_ERROR`），`build.sh`/cmake 还会确保那枚 SDK-2 构建兼容补丁在位；`[BOOT]` 的 `piousb=` 用于核对实际刷入的提交。**另有一处与版本无关的补丁**：SDK 捆绑的 TinyUSB 0.18.0 hub 驱动一次传输失败就永久停摆（上游 PR #2994 / 0.19.0 才修好），由 configure 期生成 `hub.c` 副本补上（未打时症状：`hub_port_get_status_complete ... ASSERT FAILED` 后 hub 事件彻底断绝）。针对 0.6+ 血脉写的 9 枚补丁与整轮调查结论见 `patches/pio_usb_archive_0.6plus/`。
+7. **历史调查（已归档）**：为定位 0.6+ 血脉的 hub 拔出回归，曾在库内加过"事务失败探针"并输出 `[PIODBG]` 行（记录失败事务的原始接收字节、`started`、IN/OUT/SETUP 尝试次数；判读要点：`sync/pid` 非 0 但不像合法握手 = 收到了但**锁偏错帧**，如 `01 A5` 即 `80 D2`；`00/00` = 对端无应答）。**探针已从应用移除**，补丁与全部现场结论归档在 `patches/pio_usb_archive_0.6plus/`（含未走完的定向修思路）。`[BOOT]` 行现带 `tusb=`/`hubpatch=`/`piousb=`，**排查任何 USB 异常前先核对这三个值**（曾出现"两个固件都试过但日志一样"实为刷错固件的情况）。
 
 ## Conventions
 
 - All source comments and commit messages are in **Chinese**.
 - Compiler flags: `-Wall -Wextra` with memory usage reporting via `--print-memory-usage`.
 - `lib/pico_pio_usb/` 是 **git 子模块**（第三方）——不要直接改里面的文件：需要的修改写成 `patches/pio_usb/` 下的补丁，由 `scripts/apply-patches.sh` 应用（上游合并后删除补丁并把子模块升到含修复的提交）。
+- `lib/hidkit/` 与 `lib/hidkit-tusb-xinput/` 同样是子模块，但它们是**自有仓库**（RiderLty/hidkit、RiderLty/hidkit-tusb-xinput）——要改就在那两个仓库里改、提交，再把本仓库的子模块指过去（`git -C lib/hidkit fetch && checkout`）。**不要在子模块工作区里留下未提交的修改**，那会让别人 clone 到的固件与你的不一致。
+- hidkit 的语义层要新增事件类型时，优先在 hidkit 侧加（`hidkit_input_*` 新增出口/段前缀），本仓库只加对应的打印分支；不要在本仓库里重写解析逻辑。
 - 行格式变更需同步更新 README「输出格式」表（`tools/uart_monitor.py` 对行内容透明，无格式依赖）。

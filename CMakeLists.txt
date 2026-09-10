@@ -177,5 +177,33 @@ if(_pio_sdk2_pos EQUAL -1)
     "  请执行：./scripts/apply-patches.sh  然后重新 configure（或用 ./build.sh）")
 endif()
 
+# ------------------------------------------------------------------
+# hidkit（HID/XInput 解析库）与其 TinyUSB XInput 适配器：都是 git 子模块
+#
+#   lib/hidkit              —— 纯 C、零平台依赖的解析 core（不碰 USB 栈，只吃
+#                              描述符与报文，吐标准事件；src/hidkit_app.c 是接线层）
+#   lib/hidkit-tusb-xinput  —— XInput 类驱动 + 归一化接线（Xbox 没有 HID 接口，
+#                              必须自己跑端点管线与初始化握手）
+#
+# 本固件把两者接成 [HIDKIT] 事件流：原始报文 hexdump **照旧**，语义事件是叠加的
+# 一层 —— "所见即原始行为"这条不破。两个仓库都只读不改，升级靠 checkout 子模块。
+# ------------------------------------------------------------------
+foreach(_hk_path
+    "lib/hidkit/include/hidkit.h"
+    "lib/hidkit-tusb-xinput/CMakeLists.txt")
+  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_hk_path}")
+    message(FATAL_ERROR
+      "hidkit 子模块未初始化（缺 ${_hk_path}）。\n"
+      "  请执行：git submodule update --init --recursive   （或用 ./build.sh）")
+  endif()
+endforeach()
+
+# 库内诊断输出（[HKDBG] 行）默认开：本固件是调试器，"库自己怎么想的"正是要看的东西。
+# 置 0 连调用点一起编译掉（零开销、无字符串），与 hidkit 的 HIDKIT_DEBUG 语义一致。
+set(HIDKIT_LIB_DEBUG 1 CACHE STRING "hidkit 库内诊断输出（HIDKIT_DEBUG），0=关闭")
+
+add_subdirectory(lib/hidkit)
+add_subdirectory(lib/hidkit-tusb-xinput)
+
 add_subdirectory(lib/pico_pio_usb)
 add_subdirectory(src)

@@ -30,6 +30,10 @@
 // 2Mbaud）输出。原生 USB Device 栈禁用（CFG_TUD_ENABLED=0），Pico
 // 在上位机上不再是任何 USB 设备，仅作为独立的调试采集器。
 // TinyUSB 中 roothub port0 是原生 USB 控制器（不初始化），port1 是 pico-pio-usb。
+//
+// 原始 hexdump 之外另叠一层语义事件（[HIDKIT]）与库内诊断（[HKDBG]）：
+// 由 lib/hidkit（解析核心）与 lib/hidkit-tusb-xinput（Xbox 类驱动）提供，
+// 接线见 src/hidkit_app.c。两者都是叠加层 —— 关掉不影响原始采集。
 
 #include "hardware/clocks.h"
 #include "pico/stdlib.h"
@@ -42,6 +46,8 @@
 
 #include "uart_output.h"
 #include "tusb_log.h"
+#include "hidkit.h"        /* 自证行里的 HIDKIT_DEBUG / 容量宏 */
+#include "hidkit_app.h"
 
 // 字符串化宏：启动标记里显示编译期确定的波特率
 #define PICO_STR2(x) #x
@@ -69,15 +75,18 @@ static void boot_banner(void) {
   snprintf(ver, sizeof(ver), "%u.%u.%u", (unsigned)TUSB_VERSION_MAJOR,
            (unsigned)TUSB_VERSION_MINOR, (unsigned)TUSB_VERSION_REVISION);
 
-  char buf[128];
+  char buf[192];
   // tusb= 实际链接的 TinyUSB 版本；hubpatch= 是否打了 hub 驱动韧性补丁；
   // piousb= PIO-USB 子模块当前提交（本仓库固定为旧血脉顶端 9510f79）——
   // 排查前先核对这三个值，避免"日志一样其实是上一版固件"
+  // hkdbg=/hkevt= hidkit 语义层的两个开关（库内诊断 / [HIDKIT] 事件行）：
+  // "为什么没有 [HIDKIT] 行"先看这两个值，与"刷错固件"是同一类误判
   int n = snprintf(buf, sizeof(buf) - 2,
                    "[BOOT]  system init: pico-hid-debugger uart=%s 8N1"
-                   " tusb=%s hubpatch=%u piousb=%s\r\n",
+                   " tusb=%s hubpatch=%u piousb=%s hkdbg=%u hkevt=%u\r\n",
                    PICO_STR(UARTO_BAUDRATE), ver, (unsigned)TUSB_HUB_PATCHED,
-                   PIO_USB_COMMIT);
+                   PIO_USB_COMMIT, (unsigned)HIDKIT_DEBUG,
+                   (unsigned)HIDKIT_APP_EVENTS);
   if (n > 0) {
     if (n > (int)sizeof(buf) - 2) n = (int)sizeof(buf) - 2;
     uart_output_send(buf, (uint8_t)n);
@@ -90,6 +99,10 @@ void core1_main() {
 
   // TinyUSB 日志桥接先于 tuh_init 就绪：最早一条日志出现在栈初始化期间
   tusb_log_init();
+
+  // hidkit 解析层上电清空（静态槽位表 + instance→槽位映射）。
+  // 与栈无耦合，早于 tuh_init 即可；此后挂载/报文回调都会用到它
+  hidkit_app_init();
 
   // 通过 tuh_configure() 将 PIO 配置传递给 Host 栈
   // 注意: tuh_configure() 必须在 tuh_init() 之前调用

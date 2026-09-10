@@ -4,3 +4,9 @@
 	# 上游未合并的修复以 patches/ 形式在初始化后打到子模块工作区，
 	# ignore=dirty 让父仓库 git status 不因这些补丁显示 "modified content"。
 	ignore = dirty
+[submodule "lib/hidkit"]
+	path = lib/hidkit
+	url = https://github.com/RiderLty/hidkit.git
+[submodule "lib/hidkit-tusb-xinput"]
+	path = lib/hidkit-tusb-xinput
+	url = https://github.com/RiderLty/hidkit-tusb-xinput.git

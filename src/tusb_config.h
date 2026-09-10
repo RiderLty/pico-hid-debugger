@@ -51,6 +51,10 @@
 // TinyUSB 内部日志级别：1=错误 2=警告+错误（含枚举过程） 3=信息（最啰嗦）。
 // 日志经 CFG_TUSB_DEBUG_PRINTF 挂接的 tusb_log_printf() 按行组装，
 // 以 [TUSB] 头从 UART 输出；级别 3 在高流量设备下会挤占带宽，按需调低
+//
+// SDK 的 tinyusb_host 默认带 -DCFG_TUSB_DEBUG=0（命令行定义），这里要 3 级：
+// 先 undef 再定义，否则每份包含本头的 TU 都会报 "CFG_TUSB_DEBUG redefined"
+#undef  CFG_TUSB_DEBUG
 #define CFG_TUSB_DEBUG           3
 
 // 把 TinyUSB 的 tu_printf 重定向到本工程的日志桥接（src/tusb_log.c）
@@ -86,6 +90,11 @@
 #define CFG_TUH_HID                  16
 #define CFG_TUH_HID_EPIN_BUFSIZE    64
 #define CFG_TUH_HID_EPOUT_BUFSIZE   64
+
+// XInput 类驱动（lib/hidkit-tusb-xinput）：Xbox 手柄走厂商接口而非 HID，
+// 由 usbh_app_driver_get_cb()（src/hidkit_app.c）注册。0 = 整个驱动编译掉，
+// 此时 Xbox 手柄枚举不到类驱动，只在 [MOUNT]/[DEVDS] 里露个脸。
+#define CFG_TUH_XINPUT 1
 
 #ifdef __cplusplus
  }

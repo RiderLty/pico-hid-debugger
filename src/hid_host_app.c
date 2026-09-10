@@ -15,13 +15,15 @@
 
 #include "uart_output.h"
 #include "hid_host_app.h"
+#include "hidkit_app.h"
 
 //--------------------------------------------------------------------+
 // 行输出
 //--------------------------------------------------------------------+
 
-// 行输出：格式化 + 追加 \r\n + 入队
-static void emit(const char *fmt, ...)
+// 行输出：格式化 + 追加 \r\n + 入队。非 static：hidkit_app.c 的 [HIDKIT]/[HKDBG]
+// 行走同一个出口，两族行的格式化约定（长度上限、换行、入队）保持一致
+void hid_app_emit(const char *fmt, ...)
 {
     char buf[UARTO_REC_MAX];
     va_list ap;
@@ -140,7 +142,7 @@ static desc_state_t *state_of(uint8_t dev_addr)
 
 static void desc_fetch_fail(desc_state_t *st, uint8_t dev_addr)
 {
-    emit("[ERROR] dev=%u desc fetch busy/failed (step=%u)", dev_addr, st->step);
+    hid_app_emit("[ERROR] dev=%u desc fetch busy/failed (step=%u)", dev_addr, st->step);
     st->step = DS_IDLE;
 }
 
@@ -167,7 +169,7 @@ static void emit_string(desc_state_t *st, uint8_t dev_addr, const char *label, u
 {
     uint8_t len = st->str_buf[0];
     if (len < 4u || st->str_buf[1] != TUSB_DESC_STRING) {
-        emit("[STRDS] dev=%u %s(%u) <invalid>", dev_addr, label, idx);
+        hid_app_emit("[STRDS] dev=%u %s(%u) <invalid>", dev_addr, label, idx);
         return;
     }
 
@@ -178,7 +180,7 @@ static void emit_string(desc_state_t *st, uint8_t dev_addr, const char *label, u
         text[n++] = (c >= 0x20u && c < 0x7Fu) ? (char)c : '?';
     }
     text[n] = '\0';
-    emit("[STRDS] dev=%u %s(%u)=\"%s\"", dev_addr, label, idx, text);
+    hid_app_emit("[STRDS] dev=%u %s(%u)=\"%s\"", dev_addr, label, idx, text);
 }
 
 // 控制传输完成回调：dump 当前步结果并发起下一步
@@ -189,8 +191,8 @@ static void desc_xfer_cb(tuh_xfer_t *xfer)
     if (!st || st->step == DS_IDLE) return;
 
     if (xfer->result != XFER_RESULT_SUCCESS) {
-        emit("[ERROR] dev=%u desc fetch result=%d (step=%u)",
-             xfer->daddr, (int)xfer->result, st->step);
+        hid_app_emit("[ERROR] dev=%u desc fetch result=%d (step=%u)",
+                     xfer->daddr, (int)xfer->result, st->step);
         st->step = DS_IDLE;
         return;
     }
@@ -198,13 +200,13 @@ static void desc_xfer_cb(tuh_xfer_t *xfer)
     switch (st->step) {
     case DS_DEV: {
         tusb_desc_device_t const *d = (tusb_desc_device_t const *)st->dev_buf;
-        emit("[DEVDS] dev=%u vid=%04x pid=%04x bcdUSB=%04x cls=%02x/%02x/%02x "
-             "pkt0=%u bcdDev=%04x cfgs=%u",
-             xfer->daddr, d->idVendor, d->idProduct, d->bcdUSB,
-             d->bDeviceClass, d->bDeviceSubClass, d->bDeviceProtocol,
-             d->bMaxPacketSize0, d->bcdDevice, d->bNumConfigurations);
-        emit("[DEVDS] dev=%u iMfg=%u iProd=%u iSer=%u",
-             xfer->daddr, d->iManufacturer, d->iProduct, d->iSerialNumber);
+        hid_app_emit("[DEVDS] dev=%u vid=%04x pid=%04x bcdUSB=%04x cls=%02x/%02x/%02x "
+                     "pkt0=%u bcdDev=%04x cfgs=%u",
+                     xfer->daddr, d->idVendor, d->idProduct, d->bcdUSB,
+                     d->bDeviceClass, d->bDeviceSubClass, d->bDeviceProtocol,
+                     d->bMaxPacketSize0, d->bcdDevice, d->bNumConfigurations);
+        hid_app_emit("[DEVDS] dev=%u iMfg=%u iProd=%u iSer=%u",
+                     xfer->daddr, d->iManufacturer, d->iProduct, d->iSerialNumber);
         hexdump("DEVDS", xfer->daddr, -1, st->dev_buf, (uint16_t)xfer->actual_len);
 
         st->str_seq[0] = d->iManufacturer;
@@ -222,9 +224,9 @@ static void desc_xfer_cb(tuh_xfer_t *xfer)
 
     case DS_CFG: {
         tusb_desc_configuration_t const *c = (tusb_desc_configuration_t const *)st->cfg_buf;
-        emit("[CFGDS] dev=%u total=%u itfs=%u cfg=%u attr=0x%02x power=%umA",
-             xfer->daddr, c->wTotalLength, c->bNumInterfaces, c->bConfigurationValue,
-             c->bmAttributes, c->bMaxPower * 2u);
+        hid_app_emit("[CFGDS] dev=%u total=%u itfs=%u cfg=%u attr=0x%02x power=%umA",
+                     xfer->daddr, c->wTotalLength, c->bNumInterfaces, c->bConfigurationValue,
+                     c->bmAttributes, c->bMaxPower * 2u);
         hexdump("CFGDS", xfer->daddr, -1, st->cfg_buf, (uint16_t)xfer->actual_len);
 
         st->step = DS_LANG;
@@ -239,7 +241,7 @@ static void desc_xfer_cb(tuh_xfer_t *xfer)
     case DS_LANG: {
         if (xfer->actual_len >= 4u) {
             st->langid = (uint16_t)(st->str_buf[2] | (st->str_buf[3] << 8));
-            emit("[STRDS] dev=%u langid=0x%04x", xfer->daddr, st->langid);
+            hid_app_emit("[STRDS] dev=%u langid=0x%04x", xfer->daddr, st->langid);
         }
         st->step = DS_IDLE;   // fetch_next_string 内部会推进到具体字符串
         fetch_next_string(st, xfer->daddr);
@@ -272,11 +274,11 @@ void tuh_mount_cb(uint8_t dev_addr)
 {
     uint16_t vid, pid;
     tuh_vid_pid_get(dev_addr, &vid, &pid);
-    emit("[MOUNT] dev=%u vid=%04x pid=%04x", dev_addr, vid, pid);
+    hid_app_emit("[MOUNT] dev=%u vid=%04x pid=%04x", dev_addr, vid, pid);
 
     desc_state_t *st = state_of(dev_addr);
     if (!st) {
-        emit("[ERROR] dev=%u exceeds dev table (%u)", dev_addr, DESC_MAX_DEV);
+        hid_app_emit("[ERROR] dev=%u exceeds dev table (%u)", dev_addr, DESC_MAX_DEV);
         return;
     }
     memset(st, 0, sizeof(*st));
@@ -291,7 +293,7 @@ void tuh_mount_cb(uint8_t dev_addr)
 // 设备移除（掉线或拔出）
 void tuh_umount_cb(uint8_t dev_addr)
 {
-    emit("[DEVRM] dev=%u", dev_addr);
+    hid_app_emit("[DEVRM] dev=%u", dev_addr);
     desc_state_t *st = state_of(dev_addr);
     if (st) st->step = DS_IDLE;
 }
@@ -316,7 +318,7 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
         s_itf_num[instance] = itf_num;
     }
 
-    emit("[HIDMT] dev=%u vid=%04x pid=%04x itf=%u proto=%s cls=%02x sub=%02x eps=%u",
+    hid_app_emit("[HIDMT] dev=%u vid=%04x pid=%04x itf=%u proto=%s cls=%02x sub=%02x eps=%u",
          dev_addr, vid, pid, itf_num,
          itf_protocol < 3u ? s_proto_str[itf_protocol] : "?", cls, sub, eps);
 
@@ -324,11 +326,16 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
     if (desc_report && desc_len) {
         hexdump("RPTDS", dev_addr, (int)itf_num, desc_report, desc_len);
     } else {
-        emit("[RPTDS] dev=%u itf=%u not captured (>enum buf)", dev_addr, itf_num);
+        hid_app_emit("[RPTDS] dev=%u itf=%u not captured (>enum buf)", dev_addr, itf_num);
     }
 
+    // 语义层：把接口信息与报告描述符交给 hidkit 判定是否接管。
+    // 放在原始 dump 之后 —— 原始采集先出，语义判读后出，日志顺序即因果顺序
+    hidkit_app_mount(dev_addr, instance, itf_num, itf_protocol,
+                     desc_report, desc_len);
+
     if (!tuh_hid_receive_report(dev_addr, instance)) {
-        emit("[ERROR] dev=%u cannot request report", dev_addr);
+        hid_app_emit("[ERROR] dev=%u cannot request report", dev_addr);
     }
 }
 
@@ -336,19 +343,23 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
 void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance)
 {
     uint8_t itf_num = (instance < CFG_TUH_HID) ? s_itf_num[instance] : 0;
-    emit("[UNHID] dev=%u itf=%u", dev_addr, itf_num);
+    hid_app_emit("[UNHID] dev=%u itf=%u", dev_addr, itf_num);
+    // 释放 hidkit 槽位：库内先按布局表补发"全部抬起"（按键不会残留"按着"）
+    hidkit_app_umount(instance);
     if (instance < CFG_TUH_HID) s_itf_num[instance] = 0;
 }
 
-// 收到 HID 中断端点报文：整包 hexdump，不做语义解析
+// 收到 HID 中断端点报文：整包 hexdump + 叠加一层语义事件（[HIDKIT] 行）
 void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance,
                                 uint8_t const *report, uint16_t len)
 {
     if (len != 0 && instance < CFG_TUH_HID) {
         hexdump("HID", dev_addr, (int)s_itf_num[instance], report, len);
+        // 原始报文在前、语义事件在后：一条报文若是"读错了"，两行对着看即知
+        hidkit_app_report(instance, report, len);
     }
 
     if (!tuh_hid_receive_report(dev_addr, instance)) {
-        emit("[ERROR] dev=%u cannot request report", dev_addr);
+        hid_app_emit("[ERROR] dev=%u cannot request report", dev_addr);
     }
 }

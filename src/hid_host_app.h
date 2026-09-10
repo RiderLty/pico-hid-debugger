@@ -10,11 +10,15 @@
  *   - HID 接口挂载（tuh_hid_mount_cb）：dump 接口信息与报告描述符
  *   - 报文接收（tuh_hid_report_received_cb）：按行 hexdump 原始报文
  *
- * 不做任何 HID 语义解析。全部回调运行在 core1 的 tuh_task() 上下文，
- * 单线程无并发问题。
+ * 本模块只做"原始采集"：不做任何 HID 语义解析 —— 语义层在 hidkit_app.c，
+ * 由这里在 dump 之后叠加调用（关掉它，固件行为与从前完全一致）。
+ * 全部回调运行在 core1 的 tuh_task() 上下文，单线程无并发问题。
  */
 
 #include <stdint.h>
+
+// 行输出：格式化 + 追加 \r\n + 入队（hidkit_app.c 的 [HIDKIT]/[HKDBG] 行共用）
+void hid_app_emit(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 void tuh_mount_cb(uint8_t dev_addr);
 void tuh_umount_cb(uint8_t dev_addr);
