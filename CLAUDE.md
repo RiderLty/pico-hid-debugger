@@ -10,7 +10,7 @@ PIO-USB 端口（GPIO12/13）枚举插入的 USB 设备（含 Hub），挂载时
 
 在其之上**叠加**一层语义解析：报文同时喂给 [hidkit](https://github.com/RiderLty/hidkit)（`lib/hidkit` 子模块，纯 C 解析库），事件以 `[HIDKIT]` 行输出、库内诊断以 `[HKDBG]` 行输出；Xbox 手柄这类没有 HID 接口的设备由 `lib/hidkit-tusb-xinput`（XInput 类驱动 + 归一化接线）接管后走同一个出口。这一层是纯附加的：语义解析不改变原始采集，两者各自独立开关。
 
-四类输出（`[HID]` 原始报文 / `[HIDKIT]` 语义事件 / `[HKDBG]` 库内诊断 / `[TUSB]` 栈日志）**各有运行期开关位**，由上位机经 UART 下行**单字节**控制（`src/log_switch.c/.h`），另有挂载/描述符行的 `INFO` 位。上电默认 `0x13` = 语义层 + 挂载信息（`[HID]`/`[TUSB]` 默认关）。编译期开关（`HIDKIT_APP_EVENTS`/`HIDKIT_LIB_DEBUG`）保持原样，运行期位叠加在其上：编译期决定代码在不在固件里，运行期决定现在出不出。`[BOOT]`/`[ERROR]`/`[DROP]`/`[CTRL]` 恒开。
+四类输出（`[HID]` 原始报文 / `[HIDKIT]` 语义事件 / `[HKDBG]` 库内诊断 / `[TUSB]` 栈日志）**各有运行期开关位**，由上位机经 UART 下行**单字节**控制（`src/log_switch.c/.h`），另有挂载/描述符行的 `INFO` 位。**固件上电默认全开 `0x1F`**（"失败要响"：没有下发手段的观察者不该遇到类别静默消失）；`index.html` 的记忆偏好默认 `0x13`（语义层 + 挂载信息），连上即下发。编译期开关（`HIDKIT_APP_EVENTS`/`HIDKIT_LIB_DEBUG`）保持原样，运行期位叠加在其上：编译期决定代码在不在固件里，运行期决定现在出不出。`[BOOT]`/`[ERROR]`/`[DROP]`/`[CTRL]` 恒开。
 
 原生 USB Device 栈禁用（`CFG_TUD_ENABLED=0`）：Pico 在上位机上不枚举任何设备，输出经硬件 UART0（**GPIO2=TX / GPIO3=RX，2000000bps 8N1**），同一个口的 RX 收上位机下行的开关指令。注意 RP2350 上 GPIO2/3 的 UART 复用在 FUNCSEL 11（`GPIO_FUNC_UART_AUX`），不是 RP2040 的 FUNC2。**RX 引脚必须上拉**（`uart_output_init()` 里的 `gpio_pull_up`）：`gpio_set_function()` 不动上下拉、RP2350 pad 复位是浮空的，适配器没接时悬空输入会在 2Mbaud 下产生随机字节，每个都会被当成一发开关指令。
 
@@ -98,7 +98,7 @@ tuh_task()                                      while(1) 循环：
 | `patches/pio_usb/` | 当前**只有一枚** `0001-sdk2-compat.patch`（旧血脉缺的 Pico SDK 2 构建兼容：本地 `pio_sm_set_jmp_pin` 与 SDK2 重名冲突 + 生成头缺 `pio_version` 字段）。**基线 = 子模块锁定提交 9510f79**。针对 0.6+ 血脉写的 9 枚补丁与整轮调查结论归档在 `patches/pio_usb_archive_0.6plus/`（当前不使用） |
 | `scripts/apply-patches.sh` | 幂等打补丁脚本（默认应用 / `--status` / `--revert`）；`build.sh` 与 CMake 配置期都会检查补丁是否在位 |
 | `tools/uart_monitor.py` | 上位机串口监视脚本（pyserial，自动探测/冻结/清屏） |
-| `index.html` | Web Serial 日志查看器：**xterm.js + WebGL 渲染**（vendor/ 于 `vendor/`，UMD 挂载注意：xterm 展开式、fit/webgl 命名空间式），默认 2M，**固件输出开关勾选框**（`data-sw` 位号须与 `src/log_switch.h` 一致；localStorage `switch` 记忆，连接打开即下发、`[BOOT]` 行补发，下发经 promise 链串行化——`WritableStream` 同一时刻只能有一个 writer），正则内容过滤（忽略大小写，历史存 localStorage regexHist/regex，input 防抖 400ms 实时应用、回车/失焦记忆，无效红框保持上次视图）——**视图过滤只有正则这一层**，"按 TAG 只看某几类"由固件输出开关承担，贴底跟随为 xterm 原生语义（视口 scroll 判贴底 + 回到底部角标），授权持久化 + `connect` 事件 + 100ms 轮询看门狗自动重连，ANSI 着色，模型上限 50000 行 |
+| `index.html` | Web Serial 日志查看器：**xterm.js + WebGL 渲染**（vendor/ 于 `vendor/`，UMD 挂载注意：xterm 展开式、fit/webgl 命名空间式），默认 2M，**固件输出开关勾选框**（`data-sw` 位号须与 `src/log_switch.h` 一致；localStorage `switch` 记忆，默认 `0x13`，连接打开即下发、`[BOOT]` 行补发，下发经 promise 链串行化——`WritableStream` 同一时刻只能有一个 writer）。勾选框**一个控件管两件事**：下发掩码 + 本地按位显示（`TAG_INFO` 表同时给出配色与开关位，两者不是一回事：`[BOOT]` 与 `[MOUNT]` 同色但前者恒开）。按位显示不是冗余——固件默认全开，而 `[BOOT]` 先于 core1 打印，队列会把启动那波 `[TUSB]` 缓冲在后，掩码翻回来还要再吐一段。正则内容过滤（忽略大小写，历史存 localStorage regexHist/regex，input 防抖 400ms 实时应用、回车/失焦记忆，无效红框保持上次视图），贴底跟随为 xterm 原生语义（视口 scroll 判贴底 + 回到底部角标），授权持久化 + `connect` 事件 + 100ms 轮询看门狗自动重连，ANSI 着色，模型上限 50000 行 |
 
 ## TinyUSB Configuration Notes
 

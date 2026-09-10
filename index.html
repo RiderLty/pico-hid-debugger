@@ -240,16 +240,25 @@ function initTerm() {
   new ResizeObserver(() => { try { fitAddon.fit(); } catch {} }).observe($('logwrap'));
 }
 
-// 行分类 → ANSI 着色（xterm 无 CSS 类，用 SGR 序列）
-function classify(text) {
-  if (text.startsWith('[TUSB]'))  return 't-tusb';
-  if (text.startsWith('[BOOT]'))  return 't-mount';
-  if (text.startsWith('[CTRL]'))  return 't-ctrl';
-  if (text.startsWith('[ERROR]') || text.startsWith('[DROP]')) return 't-err';
-  if (text.startsWith('[MOUNT]') || text.startsWith('[DEVRM]') ||
-      text.startsWith('[HIDMT]') || text.startsWith('[UNHID]'))  return 't-mount';
-  if (text.startsWith('[HID]') || text.startsWith('[HID+]'))   return 't-hid';
-  return '';
+// 行分类：一个 TAG 表同时给出**配色**与**归属的固件开关位**。
+// 两者不是一回事，别合并：[BOOT] 与 [MOUNT] 同色，但前者恒开、后者归 INFO 位。
+// bit 为 null = 恒开（视图与固件都不受开关影响，见固件 log_switch.h 的同名约定）。
+// 位号须与 src/log_switch.h 一致：0 HIDKIT / 1 HKDBG / 2 TUSB / 3 HID / 4 INFO。
+const TAG_INFO = [
+  ['[HIDKIT]', '',        0],    ['[HKDBG]',  '',        1],
+  ['[TUSB]',   't-tusb',  2],    ['[HID]',    't-hid',   3],
+  ['[HID+]',   't-hid',   3],
+  ['[MOUNT]',  't-mount', 4],    ['[DEVRM]',  't-mount', 4],
+  ['[HIDMT]',  't-mount', 4],    ['[UNHID]',  't-mount', 4],
+  ['[DEVDS]',  '',        4],    ['[CFGDS]',  '',        4],
+  ['[STRDS]',  '',        4],    ['[RPTDS]',  '',        4],
+  ['[BOOT]',   't-mount', null], ['[CTRL]',   't-ctrl',  null],
+  ['[ERROR]',  't-err',   null], ['[DROP]',   't-err',   null],
+];
+const TAG_NONE = { cls: '', bit: null };
+function tagInfo(text) {
+  for (const t of TAG_INFO) if (text.startsWith(t[0])) return { cls: t[1], bit: t[2] };
+  return TAG_NONE;
 }
 function ansiWrap(cls, text) {
   switch (cls) {
@@ -261,9 +270,17 @@ function ansiWrap(cls, text) {
     default:        return text;
   }
 }
-// 视图过滤只剩正则这一层。"按 TAG 只看某几类"改由固件输出开关承担
-// （顶栏勾选框）—— 那是在源头少发，比拿到本地再滤掉更省 UART 带宽
-const passFilter = text => !regexObj || regexObj.test(text);
+
+// 视图过滤 = 正则 + 开关位，两层叠加。位过滤用的是**下发到固件的那同一组勾选框**：
+// 一个控件管两件事 —— 固件发不发，以及已收到的行显不显示。
+// 后者不是冗余：固件启动默认全开，而 [BOOT] 是先于 core1 打印的，队列（1024 块）
+// 会把那一波 `[TUSB]` 缓冲在 [BOOT] 之后，掩码翻回来了还要再吐一段时间；这段
+// 积压只有靠按位显示挡掉。allLines 始终留全量，所以取消勾选只是不显示，
+// 重新勾上就回来
+function passFilter(line) {
+  if (regexObj && !regexObj.test(line.text)) return false;
+  return line.bit === null || (swMask & (1 << line.bit)) !== 0;
+}
 
 // ---------------------------------------------------------------- 输出
 function scheduleFlush() {
@@ -285,9 +302,9 @@ function appendLine(text) {
   // 回到默认开关值 —— 这里补一次下发，把记忆的开关重新压回去
   if (text.startsWith('[BOOT]')) sendSwitch();
 
-  const cls = classify(text);
-  allLines.push({ cls, text });
-  if (passFilter(text)) {
+  const { cls, bit } = tagInfo(text);
+  allLines.push({ cls, bit, text });                 // allLines 恒为全量
+  if (passFilter(allLines[allLines.length - 1])) {
     pending.push(ansiWrap(cls, text));
     viewLines.push(allLines[allLines.length - 1]);   // 导出/过滤切换的数据源
   }
@@ -350,7 +367,7 @@ function applyRegex(src) {
 }
 
 function rebuildViewData() {
-  viewLines = allLines.filter(l => passFilter(l.text));
+  viewLines = allLines.filter(passFilter);
 }
 
 // 历史菜单：既是 ▾ 按钮的管理面板，也是输入时的补全下拉。
@@ -485,7 +502,9 @@ function sendSwitch() {
 swBoxes.forEach(b => b.addEventListener('change', () => {
   swMask = swFromUI();                      // 只用有效位（见 swFromUI）
   localStorage.setItem(KEY_SW, String(swMask));
-  sendSwitch();
+  sendSwitch();                             // 1) 让固件按新掩码发
+  rebuildViewData();                        // 2) 已收到的行也跟着显/隐
+  rebuildTerm(viewLines);                   //    （allLines 留着全量，可逆）
 }));
 
 // ---------------------------------------------------------------- 串口

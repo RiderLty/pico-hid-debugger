@@ -25,10 +25,15 @@
 #define LOG_SW_INFO    (1u << 4)   // [MOUNT]/[DEVDS]/[CFGDS]/[STRDS]/[HIDMT]/
                                    // [RPTDS]/[UNHID]/[DEVRM] 挂载与描述符 dump
 
-// 有效位与上电默认值。默认=语义层 + 挂载信息；[TUSB]/[HID] 要显式打开。
-// 想恢复"全部照旧"改成 0x1F 即可 —— 默认值只此一处。
+// 有效位与上电默认值。
+//
+// 默认**全开**（0x1F），这是刻意的"失败要响"取向：固件没法知道上位机想要什么，
+// 而任何不是 index.html 的观察者（screen、tools/uart_monitor.py）根本没有下发
+// 掩码的手段，只能吃默认值 —— 默认全开意味着它们永远不会遇到"某个类别静默
+// 消失"。index.html 侧的记忆偏好默认是 0x13（安静），连上就会把掩码压下来，
+// 所以用它的人并不会因此被淹没。
 #define LOG_SW_MASK    0x1Fu
-#define LOG_SW_DEFAULT (LOG_SW_HIDKIT | LOG_SW_HKDBG | LOG_SW_INFO)
+#define LOG_SW_DEFAULT (LOG_SW_MASK)
 
 // 初始化：置默认掩码，并读丢弃 RX FIFO 里的残留字节。
 // 必须在 multicore_launch_core1() 之前、且在 core0 调用（core1 一起来就可能读
