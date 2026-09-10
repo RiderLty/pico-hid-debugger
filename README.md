@@ -24,6 +24,7 @@ PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显
 
 | 行格式 | 含义 |
 |--------|------|
+| `[BOOT]  system init: pico-hid-debugger uart=2000000 8N1` | 启动标记（开机第一条输出，先于任何 TinyUSB 日志；见到它即知本连接从系统启动起完整抓取） |
 | `[MOUNT] dev=%u vid=%04x pid=%04x` | 设备枚举完成（含 hub 设备自身） |
 | `[DEVDS] dev=%u vid=... bcdUSB=... cls=.. pkt0=... cfgs=...` | 设备描述符关键字段 |
 | `[DEVDS] dev=%u len=18 off=..: <hex>` | 设备描述符原始转储 |

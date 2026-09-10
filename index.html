@@ -136,6 +136,7 @@ function setStatus(text, cls) {
 // 行分类：配色 + 过滤判定
 function classify(text) {
   if (text.startsWith('[TUSB]'))  return 't-tusb';
+  if (text.startsWith('[BOOT]'))  return 't-mount';
   if (text.startsWith('[ERROR]') || text.startsWith('[DROP]')) return 't-err';
   if (text.startsWith('[MOUNT]') || text.startsWith('[DEVRM]') ||
       text.startsWith('[HIDMT]') || text.startsWith('[UNHID]'))  return 't-mount';

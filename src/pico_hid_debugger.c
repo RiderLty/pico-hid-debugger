@@ -27,7 +27,7 @@
 // pico-hid-debugger：USB HID 设备调试器固件。
 // PIO-USB Host（GPIO12/13）枚举插入的 HID 设备：挂载时 dump 描述符与
 // 基本信息，运行时把原始报文按行 hexdump，全部经 UART0（GPIO2/3，
-// 921600bps）输出。原生 USB Device 栈禁用（CFG_TUD_ENABLED=0），Pico
+// 2Mbaud）输出。原生 USB Device 栈禁用（CFG_TUD_ENABLED=0），Pico
 // 在上位机上不再是任何 USB 设备，仅作为独立的调试采集器。
 // TinyUSB 中 roothub port0 是原生 USB 控制器（不初始化），port1 是 pico-pio-usb。
 
@@ -38,10 +38,31 @@
 #include "pio_usb.h"
 #include "tusb.h"
 
+#include <stdio.h>
+
 #include "uart_output.h"
 #include "tusb_log.h"
 
+// 字符串化宏：启动标记里显示编译期确定的波特率
+#define PICO_STR2(x) #x
+#define PICO_STR(x)  PICO_STR2(x)
+
 /*------------- 主程序 -------------*/
+
+// 启动标记。必须在 core1 启动之前入队：它是本串第一条输出，此后才可能
+// 出现任何 TinyUSB 日志——上位机见到它，即知本连接从系统启动起完整
+// 抓取，枚举过程无缺失。这是唯一的 core0 生产者调用（仅发生在
+// multicore_launch_core1 之前，SPSC 单生产者约束不被破坏）。
+static void boot_banner(void) {
+  char buf[96];
+  int n = snprintf(buf, sizeof(buf) - 2,
+                   "[BOOT]  system init: pico-hid-debugger uart=%s 8N1\r\n",
+                   PICO_STR(UARTO_BAUDRATE));
+  if (n > 0) {
+    if (n > (int)sizeof(buf) - 2) n = (int)sizeof(buf) - 2;
+    uart_output_send(buf, (uint8_t)n);
+  }
+}
 
 // core1: 处理 USB Host 事件
 void core1_main() {
@@ -75,6 +96,10 @@ int main(void) {
   // 初始化 UART0 与跨核队列、临界区。必须先于 core1 启动：
   // 生产者随时可能入队，串口与自旋锁必须先就绪
   uart_output_init();
+
+  // 等待数毫秒让 UART 线路与对端适配器就绪，随后发启动标记
+  sleep_ms(10);
+  boot_banner();
 
   multicore_reset_core1();
   // 所有 USB Host 任务在 core1 上运行
