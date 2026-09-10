@@ -32,9 +32,11 @@
   #btnExport { margin-left: auto; }
   #count { font-size: 12px; color: #8b949e; }
   #logwrap { position: relative; flex: 1; min-height: 0; }
-  /* 虚拟滚动：行高固定 18px，超宽行横向滚动（不换行） */
+  /* 虚拟滚动：行高固定 18px，超宽行横向滚动（不换行）。
+     overflow-anchor 必须关闭：浏览器的滚动锚定会为占位高度变化
+     自动补偿 scrollTop，与程序化贴底相互打架造成漂移 */
   #log {
-    position: relative; height: 100%; overflow: auto;
+    position: relative; height: 100%; overflow: auto; overflow-anchor: none;
     font: 12px/18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   #padTop, #padBot { width: 1px; }
@@ -110,6 +112,7 @@ let lineBuf = '';               // 跨 read() 的半行缓冲
 let allLines = [];              // 全量模型：[{cls, text}]，导出与过滤切换的数据源
 let viewLines = [];             // 当前过滤视图（虚拟滚动的渲染源）
 let follow = true;              // 跟随滚动（贴底）
+let lastPinTop = -1;            // 最近一次程序化贴底后的 scrollTop（区分用户滚动）
 let missCount = 0;              // 非跟随期间新到的行数
 let renderScheduled = false;
 
@@ -186,10 +189,11 @@ function renderWindow() {
     if (div._text !== ln.text) { div._text = ln.text; div.textContent = ln.text; }
   }
 
-  // 关键顺序：先写占位高度、最后设置滚动位置。若先设 scrollTop，
-  // 会被旧的 scrollHeight 截断到差一帧的位置到不了底，还会被
-  // scroll 事件误判为"用户上滚"而关闭跟随（跟随失效的根因）
-  if (follow && total) logEl.scrollTop = logEl.scrollHeight;
+  // 关键顺序：先写占位高度、最后设置滚动位置，避免被旧 scrollHeight 截断
+  if (follow && total) {
+    logEl.scrollTop = logEl.scrollHeight;
+    lastPinTop = logEl.scrollTop;     // 记录贴底点，供 scroll 事件区分用户滚动
+  }
 
   if (!follow && missCount) chip.textContent = '↓ 回到底部（+' + missCount + '）';
   countEl.textContent = total + ' 行';
@@ -376,18 +380,39 @@ btnExport.addEventListener('click', () => {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 });
 
+// 滚动事件：区分"程序化贴底"与"用户滚动"。
+// 跟随期间的贴底赋值引发的 scroll 事件里，scrollTop 恒等于 lastPinTop
+// （日志入队只增加下方占位，不影响该值）；向上偏离它才是用户上滚。
+// 旧实现按"是否距底 1 行内"判断，日志高速入队时每帧必误判、跟随被关。
 logEl.addEventListener('scroll', () => {
-  const total = viewLines.length;
-  const atBottom = total === 0 ||
-    logEl.scrollTop + logEl.clientHeight >= total * ROW_H - ROW_H;
-  if (atBottom) {
-    if (!follow) { follow = true; chip.style.display = 'none'; missCount = 0; scheduleRender(); }
-  } else if (follow) {
-    follow = false;
-    chip.style.display = 'block';
+  if (follow) {
+    if (lastPinTop >= 0 && logEl.scrollTop < lastPinTop - 2) {
+      follow = false;                      // 用户上滚：退出跟随
+      chip.style.display = 'block';
+      scheduleRender();
+    }
+    return;                                // 贴底引发的事件：忽略
   }
-  scheduleRender();
+  // 非跟随：用户滚回底部附近则恢复跟随
+  const total = viewLines.length;
+  const distance = total * ROW_H - (logEl.scrollTop + logEl.clientHeight);
+  if (total && distance < ROW_H * 2) {
+    follow = true;
+    missCount = 0;
+    chip.style.display = 'none';
+    scheduleRender();
+  }
 });
+
+// 滚轮上滚立即退出跟随，不等 scroll 事件（避免与每帧贴底竞争）
+logEl.addEventListener('wheel', e => {
+  if (e.deltaY < 0 && follow) {
+    follow = false;
+    missCount = 0;
+    chip.style.display = 'block';
+    scheduleRender();
+  }
+}, { passive: true });
 
 chip.addEventListener('click', () => {
   follow = true; missCount = 0;
