@@ -26,10 +26,15 @@
   button:disabled { opacity: .45; cursor: not-allowed; }
   button.primary { background: #238636; border-color: #2ea043; color: #fff; }
   button.primary:hover:not(:disabled) { background: #2ea043; }
-  #status { font-size: 12px; padding: 3px 10px; border-radius: 10px; background: #30363d; }
+  /* 定宽 + 居中：状态文字长度变化（连接中…↔重连中…）不引起顶栏重排 */
+  #status {
+    font-size: 12px; padding: 3px 10px; border-radius: 10px; background: #30363d;
+    min-width: 14em; text-align: center; white-space: nowrap;
+  }
   #status.ok   { background: #12351c; color: #7ee787; }
   #status.bad  { background: #43202a; color: #ffa198; }
   #status.wait { background: #3a2d12; color: #e3b341; }
+  #btnConnect { min-width: 6em; }
   #btnExport { margin-left: auto; }
   #count { font-size: 12px; color: #8b949e; }
   .regexbox { position: relative; display: flex; align-items: center; gap: 4px; }
@@ -138,6 +143,7 @@ let atBottom = true;            // xterm 视口是否贴底（贴底时自动跟
 let missCount = 0;              // 离开底部期间新到的行数
 let regexObj = null;            // 生效中的正则（null = 不过滤）
 let regexTimer = 0;             // 输入防抖定时器
+let nextRetryAt = 0;            // 下次允许重试连接的时间戳（失败退避）
 const KEY_REGEX = 'pico-hid-debugger.regex';
 const KEY_REGEX_HIST = 'pico-hid-debugger.regexHist';
 
@@ -463,30 +469,39 @@ async function openPort(p) {
   port = p;
   portKey = keyOf(p);
   localStorage.setItem(KEY_PORT, portKey);
-  wantConnected = true;                 // 先置位：失败后由看门狗继续重试
+  wantConnected = true;                 // 先置位：失败后由看门狗按退避节奏重试
+  btnConnect.textContent = '断开';       // 重连等待期点击 = 停止自动重连
   setStatus('连接中…', 'wait');
 
-  // 首次立即 open，短暂重试消化 OS 枚举未就绪；仍失败则交给看门狗
-  for (let attempt = 0; ; attempt++) {
-    try {
-      await p.open({ baudRate: baud });
-      opening = false;
-      readLoop(p);
-      return;
-    } catch (err) {
-      if (attempt >= 4) {
-        opening = false;
-        setStatus('重连中…（设备未就绪，自动重试）', 'wait');
-        return;
-      }
-      await sleep(150);
-    }
+  // 单次尝试，不在内部循环重试：设备重插后 SerialPort 是新对象，
+  // 循环重试旧对象必然失败还会吞掉 connect 快速通道；
+  // 失败交给看门狗（100ms tick + 1s 退避）重新 getPorts 解析最新设备
+  try {
+    await p.open({ baudRate: baud });
+  } catch (err) {
+    nextRetryAt = Date.now() + 1000;
+    opening = false;
+    setStatus('重连中…（1s 后自动重试）', 'wait');
+    return;
   }
+
+  // 打开期间用户点了断开：丢弃本次连接
+  if (!wantConnected) {
+    try { await p.close(); } catch {}
+    opening = false;
+    setStatus('未连接');
+    btnConnect.textContent = '连接串口';
+    return;
+  }
+  nextRetryAt = 0;
+  opening = false;
+  readLoop(p);
 }
 
 async function closePort() {
   wantConnected = false;
   running = false;
+  nextRetryAt = 0;
   try { if (currentReader) await currentReader.cancel(); } catch {}
   try { if (port) await port.close(); } catch {}
   setStatus('未连接');
@@ -500,14 +515,17 @@ const keyOf = p => { try { const i = p.getInfo();
 } catch { return '?'; } };
 
 function setStatus(text, cls) {
+  const c = cls || '';
+  if (statusEl.textContent === text && statusEl.className === c) return;  // 去重，避免无谓重排
   statusEl.textContent = text;
-  statusEl.className = cls || '';
+  statusEl.className = c;
 }
 
 // ---------------------------------------------------------------- 串口事件
-// 连接按钮：优先连已授权且匹配记忆标识的设备（免手势），否则弹选择框
+// 连接按钮：优先连已授权且匹配记忆标识的设备（免手势），否则弹选择框。
+// 重连等待中（opening）点击 = 停止自动重连
 btnConnect.addEventListener('click', async () => {
-  if (running) { closePort(); return; }
+  if (running || opening) { closePort(); return; }
   const ports = await navigator.serial.getPorts();
   const target = ports.find(p => keyOf(p) === portKey) || port || ports[0];
   if (target) { openPort(target); return; }
@@ -533,6 +551,7 @@ navigator.serial?.addEventListener('disconnect', e => {
 });
 
 navigator.serial?.addEventListener('connect', e => {
+  nextRetryAt = 0;                       // 设备出现：清退避，立即抢连
   if (running || opening || !wantConnected) return;
   if (portKey && keyOf(e.port) !== portKey) return;
   openPort(e.port);
@@ -540,6 +559,7 @@ navigator.serial?.addEventListener('connect', e => {
 
 setInterval(async () => {
   if (running || opening || !wantConnected) return;
+  if (Date.now() < nextRetryAt) return;  // 失败退避期内不再尝试
   try {
     const ports = await navigator.serial.getPorts();
     const target = ports.find(p => keyOf(p) === portKey) ||
