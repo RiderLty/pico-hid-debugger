@@ -32,6 +32,34 @@
   #status.wait { background: #3a2d12; color: #e3b341; }
   #btnExport { margin-left: auto; }
   #count { font-size: 12px; color: #8b949e; }
+  .regexbox { position: relative; display: flex; align-items: center; gap: 4px; }
+  #regex {
+    background: #0d1117; color: #c9d1d9; border: 1px solid #30363d;
+    border-radius: 6px; padding: 4px 8px; font-size: 13px; width: 190px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  #regex:focus { outline: none; border-color: #1f6feb; }
+  #regex.invalid { border-color: #f85149; background: #3d1418; }
+  #btnRegexHist { padding: 4px 8px; }
+  #regexMenu {
+    position: absolute; top: 100%; left: 0; margin-top: 4px; z-index: 30;
+    background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+    min-width: 240px; max-width: 340px; max-height: 280px; overflow-y: auto;
+    box-shadow: 0 4px 14px rgba(0,0,0,.55);
+  }
+  #regexMenu .rm-row { display: flex; align-items: center; gap: 6px; padding: 4px 8px; cursor: pointer; }
+  #regexMenu .rm-row:hover { background: #21262d; }
+  #regexMenu .rm-pat { flex: 1; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
+  #regexMenu .rm-del {
+    background: none; border: none; color: #f85149;
+    padding: 0 4px; font-size: 13px; cursor: pointer;
+  }
+  #regexMenu .rm-clear {
+    color: #8b949e; font-size: 12px; border: none; background: none;
+    padding: 6px 8px; width: 100%; text-align: left; cursor: pointer;
+  }
+  #regexMenu .rm-clear:hover { color: #ffa198; }
+  #regexMenu .rm-empty { color: #8b949e; font-size: 12px; padding: 6px 8px; }
   #logwrap { position: relative; flex: 1; min-height: 0; }
   #term { position: absolute; inset: 0; }
   #hint { padding: 4px 12px 10px; color: #e3b341; font-size: 13px; }
@@ -62,6 +90,14 @@
     <option value="tusb">仅 [TUSB]</option>
     <option value="no-tusb">排除 [TUSB]</option>
   </select>
+  <div class="regexbox">
+    <input id="regex" type="text" list="regexHistList" spellcheck="false"
+           placeholder="正则过滤（可留空）" autocomplete="off"
+           title="正则匹配整行内容（忽略大小写），与左侧过滤叠加；回车记忆，▾ 管理历史">
+    <button id="btnRegexHist" title="历史正则：应用 / 删除">▾</button>
+    <datalist id="regexHistList"></datalist>
+    <div id="regexMenu" style="display:none"></div>
+  </div>
   <button id="btnExport" title="导出当前过滤视图为 .log 文件">导出 .log</button>
   <button id="btnClear" title="清空当前日志显示与内存缓冲">清空日志</button>
   <span id="count">0 行</span>
@@ -101,6 +137,10 @@ let pending = [];               // 待 rAF 批量写入 xterm 的 ANSI 行
 let writeScheduled = false;
 let atBottom = true;            // xterm 视口是否贴底（贴底时自动跟随输出）
 let missCount = 0;              // 离开底部期间新到的行数
+let regexObj = null;            // 生效中的正则（null = 不过滤）
+let regexTimer = 0;             // 输入防抖定时器
+const KEY_REGEX = 'pico-hid-debugger.regex';
+const KEY_REGEX_HIST = 'pico-hid-debugger.regexHist';
 
 // ---------------------------------------------------------------- 环境检查
 if (!('serial' in navigator)) {
@@ -193,9 +233,12 @@ function ansiWrap(cls, text) {
     default:        return text;
   }
 }
-const passFilter = cls =>
-  filterSel.value === 'all' ? true :
-  filterSel.value === 'tusb' ? cls === 't-tusb' : cls !== 't-tusb';
+const passFilter = (cls, text) => {
+  // 左侧 TAG 过滤 + 正则内容过滤，两者叠加（与）
+  if (filterSel.value === 'tusb' && cls !== 't-tusb') return false;
+  if (filterSel.value === 'no-tusb' && cls === 't-tusb') return false;
+  return !regexObj || regexObj.test(text);
+};
 
 // ---------------------------------------------------------------- 输出
 function scheduleFlush() {
@@ -215,7 +258,7 @@ function scheduleFlush() {
 function appendLine(text) {
   const cls = classify(text);
   allLines.push({ cls, text });
-  if (passFilter(cls)) {
+  if (passFilter(cls, text)) {
     pending.push(ansiWrap(cls, text));
     viewLines.push(allLines[allLines.length - 1]);   // 导出/过滤切换的数据源
   }
@@ -236,6 +279,124 @@ function rebuildTerm(lines) {
   if (lines.length) term.write(lines.map(l => ansiWrap(l.cls, l.text)).join('\r\n') + '\r\n');
   countEl.textContent = lines.length + ' 行';
 }
+
+// ---------------------------------------------------------------- 正则过滤
+// 输入实时应用（400ms 防抖）；回车/失焦时记忆进历史；▾ 菜单可应用/删除。
+// 历史与当前值均存 localStorage，刷新页面自动恢复。
+const regexInput = $('regex'), regexMenu = $('regexMenu');
+
+function getRegexHist() {
+  try { const h = JSON.parse(localStorage.getItem(KEY_REGEX_HIST) || '[]'); return Array.isArray(h) ? h : []; }
+  catch { return []; }
+}
+function setRegexHist(h) {
+  localStorage.setItem(KEY_REGEX_HIST, JSON.stringify(h.slice(0, 20)));
+  refreshDatalist(h.slice(0, 20));
+}
+function refreshDatalist(hist) {
+  const dl = $('regexHistList');
+  dl.innerHTML = '';
+  for (const p of hist) {
+    const o = document.createElement('option');
+    o.value = p;
+    dl.appendChild(o);
+  }
+}
+function recordRegex(p) {
+  if (!p) return;
+  const h = getRegexHist().filter(x => x !== p);
+  h.unshift(p);
+  setRegexHist(h);
+}
+
+// 应用正则。无效表达式：红框提示并保持上一次的有效过滤不变
+function applyRegex(src) {
+  localStorage.setItem(KEY_REGEX, src);
+  if (!src) {
+    regexInput.classList.remove('invalid');
+    regexObj = null;
+    rebuildViewData();
+    rebuildTerm(viewLines);
+    return;
+  }
+  let obj;
+  try { obj = new RegExp(src, 'i'); }
+  catch { regexInput.classList.add('invalid'); return; }
+  regexInput.classList.remove('invalid');
+  regexObj = obj;
+  rebuildViewData();
+  rebuildTerm(viewLines);
+}
+
+function rebuildViewData() {
+  viewLines = allLines.filter(l => passFilter(l.cls, l.text));
+}
+
+function renderRegexMenu() {
+  const h = getRegexHist();
+  regexMenu.innerHTML = '';
+  if (!h.length) {
+    const d = document.createElement('div');
+    d.className = 'rm-empty';
+    d.textContent = '暂无历史正则（输入后回车即记忆）';
+    regexMenu.appendChild(d);
+    return;
+  }
+  for (const p of h) {
+    const row = document.createElement('div');
+    row.className = 'rm-row';
+    const pat = document.createElement('span');
+    pat.className = 'rm-pat';
+    pat.textContent = p;
+    pat.title = '点击应用';
+    pat.addEventListener('click', () => {
+      regexInput.value = p;
+      applyRegex(p);
+      regexMenu.style.display = 'none';
+    });
+    const del = document.createElement('button');
+    del.className = 'rm-del';
+    del.textContent = '✕';
+    del.title = '从历史中删除';
+    del.addEventListener('click', ev => {
+      ev.stopPropagation();
+      setRegexHist(getRegexHist().filter(x => x !== p));
+      renderRegexMenu();
+    });
+    row.append(pat, del);
+    regexMenu.appendChild(row);
+  }
+  const clear = document.createElement('button');
+  clear.className = 'rm-clear';
+  clear.textContent = '清空历史';
+  clear.addEventListener('click', () => { setRegexHist([]); renderRegexMenu(); });
+  regexMenu.appendChild(clear);
+}
+
+regexInput.addEventListener('input', () => {
+  clearTimeout(regexTimer);
+  regexTimer = setTimeout(() => applyRegex(regexInput.value.trim()), 400);
+});
+regexInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    clearTimeout(regexTimer);
+    const v = regexInput.value.trim();
+    applyRegex(v);
+    recordRegex(v);
+  } else if (e.key === 'Escape') {
+    regexMenu.style.display = 'none';
+  }
+});
+regexInput.addEventListener('blur', () => recordRegex(regexInput.value.trim()));
+$('btnRegexHist').addEventListener('click', e => {
+  e.stopPropagation();
+  const show = regexMenu.style.display !== 'block';
+  renderRegexMenu();
+  regexMenu.style.display = show ? 'block' : 'none';
+});
+document.addEventListener('click', e => {
+  if (!regexMenu.contains(e.target) && e.target !== regexInput) regexMenu.style.display = 'none';
+});
 
 // ---------------------------------------------------------------- 字节流 → 行
 function handleBytes(value) {
@@ -376,9 +537,7 @@ setInterval(async () => {
 
 // ---------------------------------------------------------------- 交互
 filterSel.addEventListener('change', () => {
-  viewLines = filterSel.value === 'all'
-    ? allLines.slice()
-    : allLines.filter(l => passFilter(l.cls));
+  rebuildViewData();
   rebuildTerm(viewLines);
 });
 
@@ -424,6 +583,10 @@ window.__debug = { append: appendLine, term: () => term };
   baud = +(localStorage.getItem(KEY_BAUD) || 2000000);
   baudSel.value = String(baud);
   portKey = localStorage.getItem(KEY_PORT) || '';
+  // 恢复上次的正则过滤（不重复记忆）
+  regexInput.value = localStorage.getItem(KEY_REGEX) || '';
+  if (regexInput.value) applyRegex(regexInput.value);
+  refreshDatalist(getRegexHist());
   // 页面加载即恢复连接：已授权端口不需要任何用户手势
   const ports = await navigator.serial.getPorts();
   if (!ports.length) return;

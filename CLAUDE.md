@@ -68,7 +68,7 @@ tuh_task()                                      uart_output_flush(): 批量出�
 | `CMakeLists.txt` | Top-level: sets board to `pico2`, includes Pico SDK |
 | `lib/pico_pio_usb/` | Vendored PIO-USB library (sekigon-gonnoc) |
 | `tools/uart_monitor.py` | 上位机串口监视脚本（pyserial，自动探测/冻结/清屏） |
-| `index.html` | Web Serial 日志查看器：**xterm.js + WebGL 渲染**（vendor/ 于 `vendor/`，UMD 挂载注意：xterm 展开式、fit/webgl 命名空间式），默认 2M，`[TUSB]` 三态过滤，贴底跟随为 xterm 原生语义（视口 scroll 判贴底 + 回到底部角标），授权持久化 + `connect` 事件 + 100ms 轮询看门狗自动重连，ANSI 着色，模型上限 50000 行 |
+| `index.html` | Web Serial 日志查看器：**xterm.js + WebGL 渲染**（vendor/ 于 `vendor/`，UMD 挂载注意：xterm 展开式、fit/webgl 命名空间式），默认 2M，`[TUSB]` 三态过滤 + 正则内容过滤（叠加、忽略大小写，历史存 localStorage regexHist/regex，input 防抖 400ms 实时应用、回车/失焦记忆，无效红框保持上次视图），贴底跟随为 xterm 原生语义（视口 scroll 判贴底 + 回到底部角标），授权持久化 + `connect` 事件 + 100ms 轮询看门狗自动重连，ANSI 着色，模型上限 50000 行 |
 
 ## TinyUSB Configuration Notes
 
