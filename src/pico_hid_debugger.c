@@ -73,11 +73,7 @@ void core1_main() {
 
   // 通过 tuh_configure() 将 PIO 配置传递给 Host 栈
   // 注意: tuh_configure() 必须在 tuh_init() 之前调用
-  // D+/D- 引脚在应用侧显式配置（GPIO12/13，DM=DP+1）：
-  // 上游库的 DP 默认值是 GPIO0，引脚属于应用配置，不依赖库内魔改默认值
   pio_usb_configuration_t pio_cfg = PIO_USB_DEFAULT_CONFIG;
-  pio_cfg.pin_dp = 12;
-  pio_cfg.pinout = PIO_USB_PINOUT_DPDM;
   tuh_configure(1, TUH_CFGID_RPI_PIO_USB_CONFIGURATION, &pio_cfg);
 
   // Report 协议而非 Boot 协议：收到的是设备原生报文（Boot 协议下设备
