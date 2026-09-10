@@ -66,13 +66,20 @@ PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显
 ## 构建
 
 ```bash
-# 需要 PICO_SDK_PATH、ARM 交叉编译器、CMake >= 3.13
+./build.sh    # 一键构建：自动探测 SDK（../pico-sdk 或 ~/pico-sdk）
+```
+
+或手动构建（需要 PICO_SDK_PATH、ARM 交叉编译器、CMake >= 3.13）：
+
+```bash
 export PICO_SDK_PATH=/path/to/pico-sdk
 
 mkdir build && cd build
 cmake ..
 make -j$(nproc)
 ```
+
+可选：`UART_BAUD=921600 ./build.sh` 覆盖 UART 波特率（默认 2M，须与上位机一致且适配器支持）。
 
 输出：`build/src/pico-hid-debugger.uf2`
 
