@@ -228,7 +228,7 @@ scripts/
 3. 多配置设备只转储配置 1。
 4. 字符串描述符按 UTF-16LE 低字节转可打印 ASCII，非 ASCII 字符显示 `?`。
 5. **语义层只覆盖 hidkit 认识的设备**：boot 键鼠、NKRO 键盘、靠报告描述符解析的鼠标、以及布局表里已知的手柄（DS5/Azeron/XInput 等）。其余设备 `[HKDBG]` 会明确说 `unhandled`，原始 hexdump 不受影响 —— 这正是本固件的常态，不是故障。
-6. **XInput 路径（`lib/hidkit-tusb-xinput`）在本仓库只做编译级验证**：本机无 Xbox 手柄，握手时序与重订阅逻辑继承自 pico-hid-debugger 的同源实现（原 pico-hid-mapper 实测通过），但**本固件上未经实机验证**。
+6. **XInput 路径（`lib/hidkit-tusb-xinput`）在本仓库只做编译级验证**：本机无 Xbox 手柄，握手时序与重订阅逻辑沿用同源实现（该实现在真机上跑过），但**本固件上未经实机验证**。
 
 ## 许可证
 
