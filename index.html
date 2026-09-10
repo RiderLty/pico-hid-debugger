@@ -111,15 +111,10 @@
     <label title="[HID] 原始报文 hexdump：设备原始行为，量大"><input type="checkbox" data-sw="3">HID</label>
     <label title="挂载与描述符 dump：[MOUNT]/[DEVDS]/[CFGDS]/[STRDS]/[HIDMT]/[RPTDS]…"><input type="checkbox" data-sw="4">INFO</label>
   </span>
-  <select id="filter" title="日志过滤">
-    <option value="all">全部日志</option>
-    <option value="tusb">仅 [TUSB]</option>
-    <option value="no-tusb">排除 [TUSB]</option>
-  </select>
   <div class="regexbox">
     <input id="regex" type="text" spellcheck="false"
            placeholder="正则过滤（可留空）" autocomplete="off"
-           title="正则匹配整行内容（忽略大小写），与左侧过滤叠加；回车记忆，▾ 管理历史">
+           title="正则匹配整行内容（忽略大小写）；回车记忆，▾ 管理历史。只看某几类日志请用左侧的固件输出开关">
     <button id="btnRegexHist" title="历史正则：应用 / 删除">▾</button>
     <div id="regexMenu" style="display:none"></div>
   </div>
@@ -150,7 +145,7 @@ const SW_DEFAULT = 0x13, SW_MASK = 0x1F;
 const $ = id => document.getElementById(id);
 const termEl = $('term'), statusEl = $('status'), countEl = $('count');
 const btnConnect = $('btnConnect'), btnPick = $('btnPick'), btnClear = $('btnClear');
-const btnExport = $('btnExport'), filterSel = $('filter'), baudSel = $('baud');
+const btnExport = $('btnExport'), baudSel = $('baud');
 const chip = $('bottomChip'), hintEl = $('hint');
 
 let port = null;                // 当前使用的 SerialPort
@@ -266,12 +261,9 @@ function ansiWrap(cls, text) {
     default:        return text;
   }
 }
-const passFilter = (cls, text) => {
-  // 左侧 TAG 过滤 + 正则内容过滤，两者叠加（与）
-  if (filterSel.value === 'tusb' && cls !== 't-tusb') return false;
-  if (filterSel.value === 'no-tusb' && cls === 't-tusb') return false;
-  return !regexObj || regexObj.test(text);
-};
+// 视图过滤只剩正则这一层。"按 TAG 只看某几类"改由固件输出开关承担
+// （顶栏勾选框）—— 那是在源头少发，比拿到本地再滤掉更省 UART 带宽
+const passFilter = text => !regexObj || regexObj.test(text);
 
 // ---------------------------------------------------------------- 输出
 function scheduleFlush() {
@@ -295,7 +287,7 @@ function appendLine(text) {
 
   const cls = classify(text);
   allLines.push({ cls, text });
-  if (passFilter(cls, text)) {
+  if (passFilter(text)) {
     pending.push(ansiWrap(cls, text));
     viewLines.push(allLines[allLines.length - 1]);   // 导出/过滤切换的数据源
   }
@@ -358,7 +350,7 @@ function applyRegex(src) {
 }
 
 function rebuildViewData() {
-  viewLines = allLines.filter(l => passFilter(l.cls, l.text));
+  viewLines = allLines.filter(l => passFilter(l.text));
 }
 
 // 历史菜单：既是 ▾ 按钮的管理面板，也是输入时的补全下拉。
@@ -638,17 +630,12 @@ setInterval(async () => {
 }, 100);
 
 // ---------------------------------------------------------------- 交互
-filterSel.addEventListener('change', () => {
-  rebuildViewData();
-  rebuildTerm(viewLines);
-});
-
 btnClear.addEventListener('click', () => {
   allLines = []; viewLines = []; lineBuf = '';
   rebuildTerm([]);
 });
 
-// 导出当前过滤视图为 .log（\r\n 行尾，与固件输出一致），文件名含过滤模式
+// 导出当前过滤视图为 .log（\r\n 行尾，与固件输出一致），文件名带时间戳
 btnExport.addEventListener('click', () => {
   if (!viewLines.length) return;
   const text = viewLines.map(l => l.text).join('\r\n') + '\r\n';
@@ -657,7 +644,7 @@ btnExport.addEventListener('click', () => {
   const a = document.createElement('a');
   const d = new Date(), pad = n => String(n).padStart(2, '0');
   a.href = url;
-  a.download = 'hid-debugger-' + filterSel.value + '-' +
+  a.download = 'hid-debugger-' +
     d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' +
     pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + '.log';
   a.click();

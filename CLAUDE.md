@@ -98,7 +98,7 @@ tuh_task()                                      while(1) 循环：
 | `patches/pio_usb/` | 当前**只有一枚** `0001-sdk2-compat.patch`（旧血脉缺的 Pico SDK 2 构建兼容：本地 `pio_sm_set_jmp_pin` 与 SDK2 重名冲突 + 生成头缺 `pio_version` 字段）。**基线 = 子模块锁定提交 9510f79**。针对 0.6+ 血脉写的 9 枚补丁与整轮调查结论归档在 `patches/pio_usb_archive_0.6plus/`（当前不使用） |
 | `scripts/apply-patches.sh` | 幂等打补丁脚本（默认应用 / `--status` / `--revert`）；`build.sh` 与 CMake 配置期都会检查补丁是否在位 |
 | `tools/uart_monitor.py` | 上位机串口监视脚本（pyserial，自动探测/冻结/清屏） |
-| `index.html` | Web Serial 日志查看器：**xterm.js + WebGL 渲染**（vendor/ 于 `vendor/`，UMD 挂载注意：xterm 展开式、fit/webgl 命名空间式），默认 2M，**固件输出开关勾选框**（`data-sw` 位号须与 `src/log_switch.h` 一致；localStorage `switch` 记忆，连接打开即下发、`[BOOT]` 行补发，下发经 promise 链串行化——`WritableStream` 同一时刻只能有一个 writer），`[TUSB]` 三态过滤 + 正则内容过滤（叠加、忽略大小写，历史存 localStorage regexHist/regex，input 防抖 400ms 实时应用、回车/失焦记忆，无效红框保持上次视图），贴底跟随为 xterm 原生语义（视口 scroll 判贴底 + 回到底部角标），授权持久化 + `connect` 事件 + 100ms 轮询看门狗自动重连，ANSI 着色，模型上限 50000 行 |
+| `index.html` | Web Serial 日志查看器：**xterm.js + WebGL 渲染**（vendor/ 于 `vendor/`，UMD 挂载注意：xterm 展开式、fit/webgl 命名空间式），默认 2M，**固件输出开关勾选框**（`data-sw` 位号须与 `src/log_switch.h` 一致；localStorage `switch` 记忆，连接打开即下发、`[BOOT]` 行补发，下发经 promise 链串行化——`WritableStream` 同一时刻只能有一个 writer），正则内容过滤（忽略大小写，历史存 localStorage regexHist/regex，input 防抖 400ms 实时应用、回车/失焦记忆，无效红框保持上次视图）——**视图过滤只有正则这一层**，"按 TAG 只看某几类"由固件输出开关承担，贴底跟随为 xterm 原生语义（视口 scroll 判贴底 + 回到底部角标），授权持久化 + `connect` 事件 + 100ms 轮询看门狗自动重连，ANSI 着色，模型上限 50000 行 |
 
 ## TinyUSB Configuration Notes
 
