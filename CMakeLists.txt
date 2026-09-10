@@ -167,5 +167,15 @@ if(NOT PIO_USB_COMMIT)
 endif()
 message(STATUS "PIO-USB: old lineage (0.6.0-pre) tip ${PIO_USB_COMMIT}")
 
+# 补丁是否在位（旧血脉没有 SDK 2 兼容，缺了会以 pio_sm_set_jmp_pin 重定义报错，
+# 这里提前给出可执行的提示；构建走 ./build.sh 时该补丁会自动应用）
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/lib/pico_pio_usb/src/usb_rx.pio" _pio_rx_txt)
+string(FIND "${_pio_rx_txt}" "PICO_SDK_VERSION_MAJOR" _pio_sdk2_pos)
+if(_pio_sdk2_pos EQUAL -1)
+  message(FATAL_ERROR
+    "lib/pico_pio_usb 缺少 SDK 2 构建兼容补丁（旧血脉从未拿到该修复）。\n"
+    "  请执行：./scripts/apply-patches.sh  然后重新 configure（或用 ./build.sh）")
+endif()
+
 add_subdirectory(lib/pico_pio_usb)
 add_subdirectory(src)

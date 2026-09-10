@@ -78,8 +78,8 @@ cd pico-hid-debugger
 
 `build.sh` 会顺带完成两件初始化工作（幂等，可反复执行），因此 `git clone` 后无需任何手工配置：
 
-1. `git submodule update --init --recursive` —— 拉取 PIO-USB 库。`lib/pico_pio_usb` 是 **git 子模块**，锁定在上游提交 `5a37a66`；
-2. `./scripts/apply-patches.sh` —— 给子模块打上补丁（当前只有 SDK 2 构建兼容那一枚，见下）。
+1. `git submodule update --init --recursive` —— 拉取 PIO-USB 库。`lib/pico_pio_usb` 是 **git 子模块**，固定在**旧血脉顶端 `9510f79`**（0.6.0 重写之前，含 hub 拔出修复；本仓库放弃低速支持，见下）；
+2. `./scripts/apply-patches.sh` —— 给子模块打上补丁（两枚：SDK 2 构建兼容、device SE0 超时，见下）。
 
 或手动构建（需要 PICO_SDK_PATH、ARM 交叉编译器、CMake >= 3.13）：
 

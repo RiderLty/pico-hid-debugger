@@ -99,7 +99,7 @@ tuh_task()                                      uart_output_flush(): 批量出�
 3. 多配置设备只 dump 配置 1；字符串非 ASCII 字符显示 `?`。
 4. 枚举信息只在挂载时抓取一次，运行中不会重复查询（设备描述符/字符串不会变化，属有意为之）。
 5. **PIO-USB 版本策略（重要）**：0.6.0 的重写带来低速支持、但破坏了 hub 上设备拔出（上游 issue #149 / TinyUSB #2971 报告人 bisect 到那对提交；上游自己认定最后一个能正确处理的是 `0f747aa`）。本仓库**固定旧血脉顶端 `9510f79` 并放弃低速支持**：`CMakeLists.txt` 会检查子模块仍是旧血脉（缺 `pio_usb_host_task` 即 `FATAL_ERROR`），`build.sh`/cmake 还会确保那枚 SDK-2 构建兼容补丁在位；`[BOOT]` 的 `piousb=` 用于核对实际刷入的提交。**另有一处与版本无关的补丁**：SDK 捆绑的 TinyUSB 0.18.0 hub 驱动一次传输失败就永久停摆（上游 PR #2994 / 0.19.0 才修好），由 configure 期生成 `hub.c` 副本补上（未打时症状：`hub_port_get_status_complete ... ASSERT FAILED` 后 hub 事件彻底断绝）。针对 0.6+ 血脉写的 9 枚补丁与整轮调查结论见 `patches/pio_usb_archive_0.6plus/`。
-6. **诊断探针（补丁 0003 + `[PIODBG]` 行）**：`pio_usb_dbg_*` 记录每种事务最近一次失败的上下文：原始接收字节（`sync`/`pid`）、事务返回值 `res`、`started`、以及 IN/OUT/SETUP 累计尝试次数 `attempt[3]`；三类各留一份不会被覆盖的样本，core1 每类每 200ms 最多打印一行。**判读以 `sync`/`pid` 为准**：`00/00` = 对端无应答；非 0 但不像合法握手 = 收到了但锁偏错帧（`sync` 左移还原即可，如 `01 A5` = `80 D2`）。`started` 只作参考（`wait_handshake()` 会漏 START 标志，实测有 "`started=0` 却收到错帧字节" 的组合）；`att=…/0` = 该类事务没被调度。`[BOOT]` 行带 `tusb=`/`hubpatch=`/`piopatch=`，**排查任何 USB 异常前先核对这三个值**（曾出现"两个固件都试过但日志一样"实为刷错固件的情况）。
+6. **历史调查（已归档）**：为定位 0.6+ 血脉的 hub 拔出回归，曾在库内加过"事务失败探针"并输出 `[PIODBG]` 行（记录失败事务的原始接收字节、`started`、IN/OUT/SETUP 尝试次数；判读要点：`sync/pid` 非 0 但不像合法握手 = 收到了但**锁偏错帧**，如 `01 A5` 即 `80 D2`；`00/00` = 对端无应答）。**探针已从应用移除**，补丁与全部现场结论归档在 `patches/pio_usb_archive_0.6plus/`（含未走完的定向修思路）。`[BOOT]` 行现带 `tusb=`/`hubpatch=`/`piousb=`，**排查任何 USB 异常前先核对这三个值**（曾出现"两个固件都试过但日志一样"实为刷错固件的情况）。
 
 ## Conventions
 

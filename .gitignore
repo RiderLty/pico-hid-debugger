@@ -1,5 +1,9 @@
 # 构建产物
 build/
 
+# 上位机导出物与固件副本（便于区分版本，但不入库）
+hid-debugger-all-*.log
+*.uf2
+
 # macOS
 .DS_Store

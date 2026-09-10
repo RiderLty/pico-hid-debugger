@@ -74,6 +74,11 @@ for patch in "$PATCH_DIR"/*.patch; do
     applied="no"
     if git -C "$SUB" apply --reverse --check "$patch" >/dev/null 2>&1; then
         applied="yes"
+    elif [ "${head_sha:0:7}" != "$EXPECTED_SHA" ]; then
+        : # 子模块提交与补丁基线不符：上下文不可信，只认 reverse-check，
+          # 让本次判定落到"打不上"并报错退出，避免误判为"已应用"而静默跳过
+          # （实测：子模块被 submodule update 拉回别的提交时，标记启发式会把
+          #   面向另一血脉的补丁误判为已应用）
     else
         # 取前 3 行"够长"的新增行作候选标记，任一仍在位即认为已应用。
         # 长度门槛必不可少：像 "+//" 这种短注释在**任何**文件里都能匹配上，
