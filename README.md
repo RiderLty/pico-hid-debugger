@@ -230,6 +230,42 @@ scripts/
 5. **语义层只覆盖 hidkit 认识的设备**：boot 键鼠、NKRO 键盘、靠报告描述符解析的鼠标、以及布局表里已知的手柄（DS5/Azeron/XInput 等）。其余设备 `[HKDBG]` 会明确说 `unhandled`，原始 hexdump 不受影响 —— 这正是本固件的常态，不是故障。
 6. **XInput 路径（`lib/hidkit-tusb-xinput`）在本仓库只做编译级验证**：本机无 Xbox 手柄，握手时序与重订阅逻辑沿用**已在真机上验证过**的实现，但**本固件上未经实机验证**。
 
+## 依赖与引用
+
+本固件不是从零写的：解析、USB 栈、查看器都建立在别人的东西上。逐条列清楚 —— 并说明
+**哪些可以单独拿走，用到你自己的工程里**。
+
+### 语义解析层（可以单独引用）
+
+| 项目 | 许可 | 在本固件里的角色 |
+|------|------|------------------|
+| [**hidkit**](https://github.com/RiderLty/hidkit) | MIT | HID/XInput 解析核心：报告描述符 → 字段表，报文 → 键 / 鼠标 / 手柄事件。纯 C、零平台依赖、static 内存、无堆分配 |
+| [**hidkit-tusb-xinput**](https://github.com/RiderLty/hidkit-tusb-xinput) | MIT | XInput 适配器：TinyUSB 类驱动 + Xbox 初始化握手 + 归一化接线 |
+
+这两个是**独立开源仓库**，本固件只是它们的一个消费方（以 git 子模块挂在 `lib/` 下，
+本仓库不改它们一行；升级就是把子模块 checkout 到新提交）。要在**别的工程**里用同一套解析
+（TinyUSB / CherryUSB / ESP-IDF / 主机端都行，core 不认识 USB 栈）：
+
+```bash
+git submodule add https://github.com/RiderLty/hidkit.git             lib/hidkit
+git submodule add https://github.com/RiderLty/hidkit-tusb-xinput.git lib/hidkit-tusb-xinput
+```
+
+接入步骤见 hidkit 的 [examples/README.md](https://github.com/RiderLty/hidkit/blob/main/examples/README.md)
+与 hidkit-tusb-xinput 的[「接入清单」](https://github.com/RiderLty/hidkit-tusb-xinput#接入清单从零到跑通照做即可)。
+本仓库的 [`src/hidkit_app.c`](src/hidkit_app.c) 就是一份**可编译的接线实例**（HID 三回调转发 +
+XInput 类驱动钩子 + 出口函数实现），照抄即可。
+
+### 其余第三方组件
+
+| 组件 | 许可 | 引入方式 / 角色 |
+|------|------|------------------|
+| [Raspberry Pi Pico SDK](https://github.com/raspberrypi/pico-sdk) | BSD-3-Clause | 外部依赖（`PICO_SDK_PATH`）：双核启动、系统时钟、UART |
+| [TinyUSB](https://github.com/hathach/tinyusb) | MIT | 随 Pico SDK 捆绑，Host 栈（枚举 / HID / Hub）。本仓库在 configure 期对其中的 `hid_host.c`（三级日志编译错误）与 `hub.c`（端口变化失败后永久停摆）做**内存中修补**，SDK 文件始终原样，见顶层 `CMakeLists.txt` |
+| [Pico-PIO-USB](https://github.com/sekigon-gonnoc/Pico-PIO-USB) | MIT | git 子模块，固定在旧血脉顶端 `9510f79`；把 GPIO12/13 变成 USB Host 口 |
+| [xterm.js](https://github.com/xtermjs/xterm.js) | MIT | `index.html` 日志查看器的终端渲染（含 `addon-fit` / `addon-webgl`），已 vendor 到 `vendor/`，不联网 |
+
 ## 许可证
 
-见 [LICENSE](LICENSE)。
+本仓库自身以 [MIT](LICENSE) 发布（Copyright (c) 2026 RiderLty）；
+上文各第三方组件按其自身许可分发。
