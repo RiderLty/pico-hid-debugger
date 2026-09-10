@@ -10,12 +10,14 @@
 
 // Host functions
 usb_device_t *pio_usb_host_init(const pio_usb_configuration_t *c);
-int pio_usb_host_add_port(uint8_t pin_dp);
+int pio_usb_host_add_port(uint8_t pin_dp, PIO_USB_PINOUT pinout);
 void pio_usb_host_task(void);
 void pio_usb_host_stop(void);
 void pio_usb_host_restart(void);
 uint32_t pio_usb_host_get_frame_number(void);
-bool pio_usb_host_endpoint_abort_transfer(uint8_t root_idx, uint8_t dev_addr, uint8_t ep_addr);
+
+// Call this every 1ms when skip_alarm_pool is true.
+void pio_usb_host_frame(void);
 
 // Device functions
 usb_device_t *pio_usb_device_init(const pio_usb_configuration_t *c,
