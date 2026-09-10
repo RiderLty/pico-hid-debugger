@@ -16,7 +16,9 @@
 
 #include "uart_output.h"
 
-#define UARTO_QUEUE_DEPTH  128u   // 2 的幂（掩码索引）；约 16KB 静态 RAM
+#define UARTO_QUEUE_DEPTH  1024u  // 2 的幂（掩码索引）；约 131KB 静态 RAM，
+                                  // 可平滑枚举/多设备挂载等日志突发
+                                  // （持续超带宽仍会溢出，[DROP] 补报）
 #define UARTO_FLUSH_BUDGET 32u    // core0 每轮最多出队块数
 
 typedef struct {
