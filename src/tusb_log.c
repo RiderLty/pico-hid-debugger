@@ -18,6 +18,7 @@
 #include "pico/sync.h"
 
 #include "uart_output.h"
+#include "log_switch.h"
 #include "tusb_log.h"
 
 // 输出行形如 "[TUSB] <内容>\r\n"，总长与 uart_output 单记录上限对齐
@@ -50,9 +51,27 @@ static void flush_line_locked(void)
 }
 
 // TinyUSB 日志入口：把 printf 片段按行组装后加头输出。
-// 返回 int 仅为匹配 tu_printf 期望的 printf 签名，无实际用途。
+// 返回 int 仅为匹配 tu_printf 期望的 printf 签名，无实际用途（TinyUSB 各处
+// 都是当语句调用、不取返回值），所以关闭时返回 0 是安全的。
 int tusb_log_printf(const char *format, ...)
 {
+    // 运行期开关（LOG_SW_TUSB，见 log_switch.h）关掉时在此早退：
+    // 判定放在 vsnprintf **之前**，连格式化都省掉 —— CFG_TUSB_DEBUG=3 下
+    // 这个入口的调用量很大，省下的是实打实的 CPU。
+    //
+    // 顺手清掉组装中的半行 s_line/s_pos：否则开关切回时，第一条日志前面会
+    // 挂上一段陈旧前缀。这一步**刻意不加临界区**：s_pos 是单字节对齐存储，
+    // 与中断上下文的组装存在名义上的竞争，最坏结果是一条日志被截短，不会
+    // 崩溃 —— 为一个字节的写去抢自旋锁不划算。（本文件那个临界区是为
+    // "多字符缓冲的读-改-写"设的，与这里不是一回事。）
+    //
+    // 注意判定只在**入口**：一条跨开关切换点的多片段日志仍会走完（它开始时
+    // 是开的）—— 这是有意的，不宣称"切换零泄漏"。
+    if (!log_switch_on(LOG_SW_TUSB)) {
+        s_pos = 0;
+        return 0;
+    }
+
     char chunk[128];
     va_list ap;
     va_start(ap, format);

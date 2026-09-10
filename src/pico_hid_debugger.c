@@ -45,6 +45,7 @@
 #include <stdio.h>
 
 #include "uart_output.h"
+#include "log_switch.h"
 #include "tusb_log.h"
 #include "hidkit.h"        /* 自证行里的 HIDKIT_DEBUG / 容量宏 */
 #include "hidkit_app.h"
@@ -75,18 +76,24 @@ static void boot_banner(void) {
   snprintf(ver, sizeof(ver), "%u.%u.%u", (unsigned)TUSB_VERSION_MAJOR,
            (unsigned)TUSB_VERSION_MINOR, (unsigned)TUSB_VERSION_REVISION);
 
+  // buf 余量只剩 9 字节：本行约 119 字节（上限 UARTO_REC_MAX=128），
+  // 而 uart_output_send() 的截断是砍**尾巴**
+  // （把 \r\n 一起砍掉，上位机按 \n 拆行会把它并进下一行，破坏"本行是本次连接
+  // 第一条输出"这条不变量）。要加第七个字段，先扩大 UARTO_REC_MAX 或删旧字段。
   char buf[192];
   // tusb= 实际链接的 TinyUSB 版本；hubpatch= 是否打了 hub 驱动韧性补丁；
   // piousb= PIO-USB 子模块当前提交（本仓库固定为旧血脉顶端 9510f79）——
   // 排查前先核对这三个值，避免"日志一样其实是上一版固件"
-  // hkdbg=/hkevt= hidkit 语义层的两个开关（库内诊断 / [HIDKIT] 事件行）：
+  // hkdbg=/hkevt= hidkit 语义层的两个编译期开关（库内诊断 / [HIDKIT] 事件行）：
   // "为什么没有 [HIDKIT] 行"先看这两个值，与"刷错固件"是同一类误判
+  // sw= 运行期开关的**上电默认掩码**（收到任何下行指令之前的值，见 log_switch.h）：
+  // 实际生效值以 [CTRL] 行为准 —— 上位机连上就会把它记忆的值压下来
   int n = snprintf(buf, sizeof(buf) - 2,
                    "[BOOT]  system init: pico-hid-debugger uart=%s 8N1"
-                   " tusb=%s hubpatch=%u piousb=%s hkdbg=%u hkevt=%u\r\n",
+                   " tusb=%s hubpatch=%u piousb=%s hkdbg=%u hkevt=%u sw=0x%02X\r\n",
                    PICO_STR(UARTO_BAUDRATE), ver, (unsigned)TUSB_HUB_PATCHED,
                    PIO_USB_COMMIT, (unsigned)HIDKIT_DEBUG,
-                   (unsigned)HIDKIT_APP_EVENTS);
+                   (unsigned)HIDKIT_APP_EVENTS, (unsigned)LOG_SW_DEFAULT);
   if (n > 0) {
     if (n > (int)sizeof(buf) - 2) n = (int)sizeof(buf) - 2;
     uart_output_send(buf, (uint8_t)n);
@@ -136,6 +143,15 @@ int main(void) {
 
   // 等待数毫秒让 UART 线路与对端适配器就绪，随后发启动标记
   sleep_ms(10);
+
+  // 运行期日志开关：置默认掩码 + 读丢弃 RX 上的残留字节。放在 sleep 之后 ——
+  // 那 10ms 正是线路最不稳的窗口，drain 要覆盖它（uart_init() 自带
+  // reset/unreset，紧随其后的 FIFO 本来就是空的，放那儿等于白排）。
+  // 必须在 multicore_launch_core1() 之前：core1 一起来就可能读掩码，晚于
+  // launch 会让 core1 看到 BSS 的 0，把 tuh_init() 期间最早的栈日志全丢掉。
+  // 它不输出任何东西，boot_banner() 仍是本次连接的第一行
+  log_switch_init();
+
   boot_banner();
 
   multicore_reset_core1();
@@ -143,6 +159,9 @@ int main(void) {
   multicore_launch_core1(core1_main);
 
   while (true) {
+    // 先收指令再出队：flush 一轮预算在 2Mbaud 下最长可阻塞约 20ms，
+    // 先 poll 让开关改动最早生效
+    log_switch_poll();    // 排空 UART0 RX，应用下行单字节指令
     uart_output_flush();  // 队列批量出队，写 UART0
   }
 

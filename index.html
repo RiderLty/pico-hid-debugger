@@ -37,6 +37,16 @@
   #btnConnect { min-width: 6em; }
   #btnExport { margin-left: auto; }
   #count { font-size: 12px; color: #8b949e; }
+  /* 固件输出开关：一个字节下发，每一位控一类输出（位表见固件 src/log_switch.h） */
+  .swgroup {
+    display: flex; align-items: center; gap: 8px; padding: 3px 10px;
+    border: 1px solid #30363d; border-radius: 6px; background: #0d1117; font-size: 12px;
+  }
+  .swgroup > .lbl { color: #8b949e; }
+  .swgroup label { display: flex; align-items: center; gap: 3px; cursor: pointer; user-select: none; }
+  .swgroup input { accent-color: #238636; margin: 0; cursor: pointer; }
+  /* 关掉的置灰。:has() 不可用时只是少了灰化，不影响功能 */
+  .swgroup label:has(input:not(:checked)) { color: #6e7681; }
   .regexbox { position: relative; display: flex; align-items: center; gap: 4px; }
   #regex {
     background: #0d1117; color: #c9d1d9; border: 1px solid #30363d;
@@ -90,6 +100,17 @@
     <option value="1000000">1M</option>
     <option value="3000000">3M</option>
   </select>
+  <!-- 固件输出开关：下发一个字节，每一位控一类输出（位表见固件 src/log_switch.h）。
+       选择记忆在本机，连接一打开就立即下发；不接固件时点击只会报错到控制台 -->
+  <span class="swgroup" id="swgroup"
+        title="固件输出开关（经串口下发，立即生效）。选择记忆在本机，每次连接打开时自动重发">
+    <span class="lbl">输出</span>
+    <label title="[HIDKIT] 语义事件行：键 / 鼠标位移 / 手柄状态"><input type="checkbox" data-sw="0">HIDKIT</label>
+    <label title="[HKDBG] hidkit 库内诊断：为什么没认出某个设备看这里"><input type="checkbox" data-sw="1">HKDBG</label>
+    <label title="[TUSB] TinyUSB 栈日志：枚举与传输细节，量大"><input type="checkbox" data-sw="2">TUSB</label>
+    <label title="[HID] 原始报文 hexdump：设备原始行为，量大"><input type="checkbox" data-sw="3">HID</label>
+    <label title="挂载与描述符 dump：[MOUNT]/[DEVDS]/[CFGDS]/[STRDS]/[HIDMT]/[RPTDS]…"><input type="checkbox" data-sw="4">INFO</label>
+  </span>
   <select id="filter" title="日志过滤">
     <option value="all">全部日志</option>
     <option value="tusb">仅 [TUSB]</option>
@@ -120,6 +141,11 @@
 const MAX_LINES = 50000;        // 内存模型与 xterm 回滚上限
 const KEY_PORT = 'pico-hid-debugger.portKey';
 const KEY_BAUD = 'pico-hid-debugger.baud';
+const KEY_SW = 'pico-hid-debugger.switch';
+// 固件输出开关的位表，**须与固件 src/log_switch.h 一致**：
+// bit0 HIDKIT / bit1 HKDBG / bit2 TUSB / bit3 HID / bit4 INFO，bit5-7 保留。
+// 默认 0x13 = 语义层 + 挂载信息（[TUSB]/[HID] 要显式打开）
+const SW_DEFAULT = 0x13, SW_MASK = 0x1F;
 
 const $ = id => document.getElementById(id);
 const termEl = $('term'), statusEl = $('status'), countEl = $('count');
@@ -223,6 +249,7 @@ function initTerm() {
 function classify(text) {
   if (text.startsWith('[TUSB]'))  return 't-tusb';
   if (text.startsWith('[BOOT]'))  return 't-mount';
+  if (text.startsWith('[CTRL]'))  return 't-ctrl';
   if (text.startsWith('[ERROR]') || text.startsWith('[DROP]')) return 't-err';
   if (text.startsWith('[MOUNT]') || text.startsWith('[DEVRM]') ||
       text.startsWith('[HIDMT]') || text.startsWith('[UNHID]'))  return 't-mount';
@@ -234,6 +261,7 @@ function ansiWrap(cls, text) {
     case 't-tusb':  return '\x1b[90m' + text + '\x1b[0m';
     case 't-hid':   return '\x1b[36m' + text + '\x1b[0m';
     case 't-mount': return '\x1b[32m' + text + '\x1b[0m';
+    case 't-ctrl':  return '\x1b[35m' + text + '\x1b[0m';
     case 't-err':   return '\x1b[91m' + text + '\x1b[0m';
     default:        return text;
   }
@@ -261,6 +289,10 @@ function scheduleFlush() {
 }
 
 function appendLine(text) {
+  // 固件重启的标志行（刷固件 / 复位）：串口没断就不会触发自动重连，固件却已
+  // 回到默认开关值 —— 这里补一次下发，把记忆的开关重新压回去
+  if (text.startsWith('[BOOT]')) sendSwitch();
+
   const cls = classify(text);
   allLines.push({ cls, text });
   if (passFilter(cls, text)) {
@@ -430,6 +462,40 @@ function handleBytes(value) {
   if (lineBuf.length > 4096) { appendLine(lineBuf); lineBuf = ''; }
 }
 
+// ---------------------------------------------------------------- 固件输出开关
+// 勾选框是**唯一事实源**：只有它会写，不拿 [CTRL]/[BOOT] 回显去反同步 UI ——
+// 少一层来回，行为可预期。位号写在 DOM 的 data-sw 上，位表不两处硬编码。
+const swBoxes = [...document.querySelectorAll('#swgroup input[data-sw]')];
+let swMask = SW_DEFAULT;
+
+function renderSw() {
+  for (const b of swBoxes) b.checked = (swMask & (1 << +b.dataset.sw)) !== 0;
+}
+const swFromUI = () => swBoxes.reduce((m, b) => b.checked ? m | (1 << +b.dataset.sw) : m, 0);
+
+// 下发必须串行化：连续两次 change 会同时走到 writable.getWriter()，第二次抛
+// "WritableStream is locked"。用一条 promise 链排队，每次调用捕获当时的掩码，
+// 保证最终落到固件的一定是最新值；异常一律吞掉（端口竞态/已关闭），
+// **绝不能冒泡打断 openPort() 的连接流程**。
+let swChain = Promise.resolve();
+function sendSwitch() {
+  const mask = swMask;
+  swChain = swChain.then(async () => {
+    const p = port;
+    if (!p || !p.writable) return;          // 断开后 writable 为 null
+    const w = p.writable.getWriter();
+    try { await w.write(new Uint8Array([mask])); }
+    finally { w.releaseLock(); }
+  }).catch(() => { /* 下次连接打开时会重发 */ });
+  return swChain;
+}
+
+swBoxes.forEach(b => b.addEventListener('change', () => {
+  swMask = swFromUI();                      // 只用有效位（见 swFromUI）
+  localStorage.setItem(KEY_SW, String(swMask));
+  sendSwitch();
+}));
+
 // ---------------------------------------------------------------- 串口
 async function readLoop(p) {
   running = true;
@@ -496,6 +562,9 @@ async function openPort(p) {
   nextRetryAt = 0;
   opening = false;
   readLoop(p);
+  // 连接一打开就把记忆的开关压下去 —— 固件上电只有默认值，不等用户点。
+  // 排在 readLoop 之后，保证固件回的 [CTRL] 能被读到
+  sendSwitch();
 }
 
 async function closePort() {
@@ -612,6 +681,12 @@ window.__debug = { append: appendLine, term: () => term };
 // ---------------------------------------------------------------- 启动
 (async () => {
   if (typeof Terminal !== 'undefined') initTerm();
+  // 恢复上次的固件输出开关（先于下面的环境检查：不支持 Web Serial 时
+  // 勾选框也应如实显示记忆的状态，而不是一片未选）。存储值可能被手改坏：
+  // 非法就回落默认，并只取有效位
+  const savedSw = parseInt(localStorage.getItem(KEY_SW) ?? '', 10);
+  swMask = (Number.isFinite(savedSw) ? savedSw : SW_DEFAULT) & SW_MASK;
+  renderSw();
   if (!('serial' in navigator)) return;
   baud = +(localStorage.getItem(KEY_BAUD) || 2000000);
   baudSel.value = String(baud);

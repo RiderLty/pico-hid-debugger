@@ -20,6 +20,7 @@ target_sources(${target_name} PRIVATE
  hid_host_app.c
  hidkit_app.c
  uart_output.c
+ log_switch.c
  tusb_log.c
  ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/hcd_pio_usb.c
  )

@@ -5,6 +5,11 @@
  *           → core0 主循环 uart_output_flush() 批量出队，阻塞写 UART0。
  * UART 侧没有流控回压手段，队列满即丢：被丢的多为重复率最高的
  * 移动报文行，排空后一次性补报丢弃量。
+ *
+ * core0 自己要输出的行（[DROP] 补报、log_switch 的 [CTRL] 回执）不走队列 ——
+ * 队列是 core1 单向的生产者，core0 入队会破坏 SPSC 单生产者约定 ——
+ * 改走 uart_output_write_direct() 直写。UART 写操作因此只在 core0 发生，
+ * 出口是本文件的 flush 与 write_direct 两个。
  */
 
 #include <string.h>
@@ -42,6 +47,14 @@ void uart_output_init(void)
     uart_init(uart0, UARTO_BAUDRATE);
     gpio_set_function(UARTO_TX_PIN, GPIO_FUNC_UART_AUX);
     gpio_set_function(UARTO_RX_PIN, GPIO_FUNC_UART_AUX);
+
+    // RX 上拉：uart_init() 会置 RXE，但 gpio_set_function() 只开输入缓冲、
+    // **不动上下拉**，而 RP2350 的 pad 复位是 PUE=PDE=0 —— 也就是说在
+    // USB-UART 适配器接上并打开之前，GPIO3 是**悬空**的。悬空输入在 2Mbaud
+    // 下会产生随机起始位，每个随机字节都会被当成一发下行指令（见
+    // log_switch.c），后果是日志被凑出来的掩码静默关掉。
+    // 上拉让空闲线保持高电平，从根上消掉这类噪声
+    gpio_pull_up(UARTO_RX_PIN);
 }
 
 // 入队核心（须持有临界区）。队列满则丢最新：保住更早的行。
@@ -68,6 +81,12 @@ void uart_output_send(const void *data, uint8_t len)
     critical_section_exit(&s_cs);
 }
 
+void uart_output_write_direct(const void *data, size_t len)
+{
+    if (!data || !len) return;
+    uart_write_blocking(uart0, (const uint8_t *)data, len);
+}
+
 void uart_output_flush(void)
 {
     for (uint8_t budget = UARTO_FLUSH_BUDGET; budget; budget--) {
@@ -77,14 +96,14 @@ void uart_output_flush(void)
             s_dropped = 0;
             critical_section_exit(&s_cs);
 
-            // 队列排空后一次性补报丢弃量；直接写 UART（core0 独占），
+            // 队列排空后一次性补报丢弃量；直写 UART（core0 独占），
             // 不回队列，避免消费者自我拥塞
             if (dropped) {
                 char buf[64];
                 int n = snprintf(buf, sizeof(buf) - 2,
                                  "[DROP]  lost_lines=%lu\r\n",
                                  (unsigned long)dropped);
-                if (n > 0) uart_write_blocking(uart0, (const uint8_t *)buf, (size_t)n);
+                if (n > 0) uart_output_write_direct(buf, (size_t)n);
             }
             break;
         }

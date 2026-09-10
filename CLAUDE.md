@@ -8,9 +8,11 @@ USB HID 设备调试器固件，运行于 **Raspberry Pi Pico 2 (RP2350)**。
 
 PIO-USB 端口（GPIO12/13）枚举插入的 USB 设备（含 Hub），挂载时经异步控制传输抓取并 dump：设备描述符、配置描述符（原始整块）、字符串描述符（语言 ID/厂商/产品/序列号）；HID 接口挂载时 dump 接口信息与报告描述符；运行时把每份 HID 报告按行 hexdump。**原始报文不做任何语义解释**——本固件首先是"所见即原始行为"的调试采集器。
 
-在其之上**叠加**一层语义解析：报文同时喂给 [hidkit](https://github.com/RiderLty/hidkit)（`lib/hidkit` 子模块，纯 C 解析库），事件以 `[HIDKIT]` 行输出、库内诊断以 `[HKDBG]` 行输出；Xbox 手柄这类没有 HID 接口的设备由 `lib/hidkit-tusb-xinput`（XInput 类驱动 + 归一化接线）接管后走同一个出口。这一层是纯附加的：原始 hexdump 一行不少，两个开关（`HIDKIT_APP_EVENTS`/`HIDKIT_LIB_DEBUG`）可分别关掉。
+在其之上**叠加**一层语义解析：报文同时喂给 [hidkit](https://github.com/RiderLty/hidkit)（`lib/hidkit` 子模块，纯 C 解析库），事件以 `[HIDKIT]` 行输出、库内诊断以 `[HKDBG]` 行输出；Xbox 手柄这类没有 HID 接口的设备由 `lib/hidkit-tusb-xinput`（XInput 类驱动 + 归一化接线）接管后走同一个出口。这一层是纯附加的：语义解析不改变原始采集，两者各自独立开关。
 
-原生 USB Device 栈禁用（`CFG_TUD_ENABLED=0`）：Pico 在上位机上不枚举任何设备，输出经硬件 UART0（**GPIO2=TX / GPIO3=RX，2000000bps 8N1**）。注意 RP2350 上 GPIO2/3 的 UART 复用在 FUNCSEL 11（`GPIO_FUNC_UART_AUX`），不是 RP2040 的 FUNC2。
+四类输出（`[HID]` 原始报文 / `[HIDKIT]` 语义事件 / `[HKDBG]` 库内诊断 / `[TUSB]` 栈日志）**各有运行期开关位**，由上位机经 UART 下行**单字节**控制（`src/log_switch.c/.h`），另有挂载/描述符行的 `INFO` 位。上电默认 `0x13` = 语义层 + 挂载信息（`[HID]`/`[TUSB]` 默认关）。编译期开关（`HIDKIT_APP_EVENTS`/`HIDKIT_LIB_DEBUG`）保持原样，运行期位叠加在其上：编译期决定代码在不在固件里，运行期决定现在出不出。`[BOOT]`/`[ERROR]`/`[DROP]`/`[CTRL]` 恒开。
+
+原生 USB Device 栈禁用（`CFG_TUD_ENABLED=0`）：Pico 在上位机上不枚举任何设备，输出经硬件 UART0（**GPIO2=TX / GPIO3=RX，2000000bps 8N1**），同一个口的 RX 收上位机下行的开关指令。注意 RP2350 上 GPIO2/3 的 UART 复用在 FUNCSEL 11（`GPIO_FUNC_UART_AUX`），不是 RP2040 的 FUNC2。**RX 引脚必须上拉**（`uart_output_init()` 里的 `gpio_pull_up`）：`gpio_set_function()` 不动上下拉、RP2350 pad 复位是浮空的，适配器没接时悬空输入会在 2Mbaud 下产生随机字节，每个都会被当成一发开关指令。
 
 ## Build
 
@@ -41,9 +43,10 @@ No test suite or linter is configured.
 ```
 core1 (PIO-USB Host, GPIO12/13)                 core0 (UART0, GPIO2/3, 2000000)
 ─────────────────────────────────────           ──────────────────────────────
-tuh_task()                                      uart_output_flush(): 批量出队
- └ tuh_mount_cb        [hid_host_app]              → uart_write_blocking()
-     │ 描述符抓取状态机（异步控制传输链）
+tuh_task()                                      while(1) 循环：
+ └ tuh_mount_cb        [hid_host_app]             1. log_switch_poll()  排空 UART0 RX
+     │ 描述符抓取状态机（异步控制传输链）           │   → 置掩码 + [CTRL] 直写
+     │                                             └ 2. uart_output_flush() 批量出队
      │   DEV → CFG → LANG → Mfg → Prod → Ser
      ├ tuh_hid_mount_cb → itf 信息 + 报告描述符 dump + 订阅报文
      │                    └ hidkit_app_mount() → hidkit_mount()（不认就不占槽位）
@@ -57,8 +60,13 @@ tuh_task()                                      uart_output_flush(): 批量出�
 ```
 
 关键约束：
-- 所有 UART 写操作只允许出现在 core0 的 `uart_output_flush()`；core1 只做格式化与入队，消除并发写 UART。
+- **所有 UART 写操作只在 core0**，出口有两个：`uart_output_flush()`（队列批量出队）与 `uart_output_write_direct()`（绕过队列的直写，给 core0 自己要输出的行用）。core1 只做格式化与 `uart_output_send()` 入队，消除并发写 UART。
+- **core0 不得调用 `uart_output_send()`**（除 `boot_banner()` 外——它在 `multicore_launch_core1()` 之前，SPSC 单生产者约定未被破坏）：队列是 core1 单向的生产者，core0 入队会破坏它。core0 自己输出（`[DROP]` 补报、`[CTRL]` 回执）一律走 `uart_output_write_direct()`。代价是这类行**可能排在 core1 更早入队的行之前**，属外观问题。
 - `uart_output_init()`（UART + 队列 + 临界区）必须在 `multicore_launch_core1()` 之前调用：生产者随时可能入队。
+- `log_switch_init()` 同样必须在 `multicore_launch_core1()` 之前、且在 core0（core1 一起来就可能读掩码；晚于 launch 会让 core1 读到 BSS 的 0，把最早的栈日志全丢掉）。它**不输出任何东西**，也不得打印——`[BOOT]` 必须仍是本次连接的第一行。
+- 运行期掩码 `s_mask` 是**单字节 `volatile`**，core0 写、core1（含中断上下文）读，**刻意不加临界区**（对齐字节访问在 ARMv8-M 上原子、SRAM 无 cache、无伴随数据）。改多字段结构或配计数器就必须加锁。
+- 判定放**最外层**（`hid_app_emit_info` / `hexdump` / `emit_tagged` / `tusb_log_printf` 入口）：关掉时连格式化都不做，且一次 dump 全有或全无。`hexdump` / `emit_tagged` 的开关位是**首参**，漏改调用点会编译报错而非静默变义。
+- **开关只管打印，不管解析**：`[HID]` 关掉时 `hidkit_app_report()` 照常调用，`INFO` 关掉时描述符抓取状态机照常跑。
 - 系统时钟必须为 12MHz 整数倍（当前 120MHz），PIO-USB 时序依赖。
 - 描述符抓取是**异步**控制传输链（tuh_descriptor_get_* 完成回调里发起下一步）；状态按 dev_addr 分槽（`desc_state_t`）。设备拔出时 `tuh_umount_cb` 将 step 置 IDLE，迟到的完成回调据此丢弃。
 - HID 报文回调里先输出再 `tuh_hid_receive_report()` 重新订阅，报文流才持续。
@@ -69,15 +77,17 @@ tuh_task()                                      uart_output_flush(): 批量出�
 
 - TAG 定宽：`[TAG]` 紧跟 TAG 本体，其后用空格补齐到第 8 列（`TAG_COL`）再输出内容——hexdump 内用 `%*s` 补位，其余 emit 行的 TAG 均为 5 字符 + 1 空格天然对齐。**例外**：`[HIDKIT]`/`[HKDBG]`（6/5 字符）统一补到第 9 列（`hidkit_app.c` 的 `HK_TAG_COL`），两族行彼此对齐。
 - HEX 折行 dump 统一走 `hexdump()`：每行前缀含 `len=`（整块总长）与 `off=`（本行起始偏移），前缀用空格补齐到固定列 `HEX_COL`（40）后才输出数据，跨行数据列垂直对齐。`itf_num` 传 `-1` 省略 itf 字段（设备级描述符），报文与报告描述符传实际接口号。
+- 运行期开关按 TAG 分族：`[HIDKIT]`/`[HKDBG]`/`[TUSB]`/`[HID]` 各一位，挂载与描述符行（`[MOUNT]`/`[DEVDS]`/`[CFGDS]`/`[STRDS]`/`[HIDMT]`/`[RPTDS]`/`[UNHID]`/`[DEVRM]`）共用 `INFO` 位；`[BOOT]`/`[ERROR]`/`[DROP]`/`[CTRL]` 恒开。
 
 ## Key Files
 
 | File | Role |
 |------|------|
 | `src/pico_hid_debugger.c` | 入口：`main()`（core0：UART 初始化与输出循环）、`core1_main()`（core1：tuh 配置与任务循环） |
-| `src/hid_host_app.c/.h` | 信息采集模块：全部 tuh 回调、描述符抓取状态机（异步控制传输链）、hexdump 格式化；HID 三个回调在 dump 之后各多一步 `hidkit_app_*` 转发。`hid_app_emit()` 是全工程共用的行输出出口（非 static，hidkit_app.c 也用） |
-| `src/hidkit_app.c/.h` | **语义层接线**：实现 hidkit 的四个弱符号出口（`hidkit_input_*`）与库内诊断出口（`hidkit_debug_printf`）→ `[HIDKIT]`/`[HKDBG]` 行；维护 instance→槽位映射；**定义 `usbh_app_driver_get_cb()`** 转发 XInput 适配器的类驱动（该钩子全工程只能有一个定义，适配器刻意不定义） |
-| `src/uart_output.c/.h` | 跨核传输层：SPSC 字节块队列、UART0 初始化（GPIO2/3 @ 2000000）、core0 批量写出 |
+| `src/hid_host_app.c/.h` | 信息采集模块：全部 tuh 回调、描述符抓取状态机（异步控制传输链）、hexdump 格式化；HID 三个回调在 dump 之后各多一步 `hidkit_app_*` 转发。**两个行出口**：`hid_app_emit()`（恒开，`[ERROR]` 走它）与 `hid_app_emit_info()`（受 `LOG_SW_INFO` 门控，挂载/描述符行走它），共用 static 内核 `emit_v()`。`hexdump()` 首参是开关位 |
+| `src/hidkit_app.c/.h` | **语义层接线**：实现 hidkit 的四个弱符号出口（`hidkit_input_*`）与库内诊断出口（`hidkit_debug_printf`）→ `[HIDKIT]`/`[HKDBG]` 行；维护 instance→槽位映射；**定义 `usbh_app_driver_get_cb()`** 转发 XInput 适配器的类驱动（该钩子全工程只能有一个定义，适配器刻意不定义）。static `emit_tagged(bit, tag, fmt, ...)` 首参是开关位 |
+| `src/log_switch.c/.h` | **运行期输出开关**：位定义（`LOG_SW_*`/`LOG_SW_DEFAULT`=0x13）、`log_switch_init()`（core0，置默认值 + 读丢弃 RX 残留，必须在 launch core1 之前）、`log_switch_on()`（热路径只读单字节 volatile）、`log_switch_poll()`（core0 排空 UART RX、应用掩码、回 `[CTRL]`）。位表是**固件与 index.html 的接口**，改这里要同步改 `index.html` 的 `data-sw` 与 README 的表 |
+| `src/uart_output.c/.h` | 跨核传输层：SPSC 字节块队列、UART0 初始化（GPIO2/3 @ 2000000）、core0 批量写出、core0 直写出口 `uart_output_write_direct()`；RX 上拉在此设置（防悬空噪声被当成开关指令） |
 | `src/tusb_log.c/.h` | TinyUSB 内部日志桥接：`CFG_TUSB_DEBUG_PRINTF` 挂接 `tu_printf`，片段按行组装（core1 临界区防穿插），`[TUSB]` 头入队 |
 | `src/tusb_config.h` | TinyUSB 配置：仅 Host 栈（CFG_TUD_ENABLED=0），Host HID×16 + Hub + `CFG_TUH_XINPUT`，枚举缓冲 512，`CFG_TUSB_DEBUG=3`（SDK 命令行自带 `-DCFG_TUSB_DEBUG=0`，故这里先 `#undef` 再定义，否则每份 TU 都报 redefined） |
 | `src/CMakeLists.txt` | 构建目标，链接 pico_stdlib, pico_pio_usb, tinyusb_host, hidkit, hidkit_tusb_xinput；传 hidkit 容量宏（`HIDKIT_MAX_*` 4/4/4）与两个开关（`HIDKIT_DEBUG`、`HIDKIT_APP_EVENTS`）；stdio UART/USB 显式关闭 |
@@ -88,7 +98,7 @@ tuh_task()                                      uart_output_flush(): 批量出�
 | `patches/pio_usb/` | 当前**只有一枚** `0001-sdk2-compat.patch`（旧血脉缺的 Pico SDK 2 构建兼容：本地 `pio_sm_set_jmp_pin` 与 SDK2 重名冲突 + 生成头缺 `pio_version` 字段）。**基线 = 子模块锁定提交 9510f79**。针对 0.6+ 血脉写的 9 枚补丁与整轮调查结论归档在 `patches/pio_usb_archive_0.6plus/`（当前不使用） |
 | `scripts/apply-patches.sh` | 幂等打补丁脚本（默认应用 / `--status` / `--revert`）；`build.sh` 与 CMake 配置期都会检查补丁是否在位 |
 | `tools/uart_monitor.py` | 上位机串口监视脚本（pyserial，自动探测/冻结/清屏） |
-| `index.html` | Web Serial 日志查看器：**xterm.js + WebGL 渲染**（vendor/ 于 `vendor/`，UMD 挂载注意：xterm 展开式、fit/webgl 命名空间式），默认 2M，`[TUSB]` 三态过滤 + 正则内容过滤（叠加、忽略大小写，历史存 localStorage regexHist/regex，input 防抖 400ms 实时应用、回车/失焦记忆，无效红框保持上次视图），贴底跟随为 xterm 原生语义（视口 scroll 判贴底 + 回到底部角标），授权持久化 + `connect` 事件 + 100ms 轮询看门狗自动重连，ANSI 着色，模型上限 50000 行 |
+| `index.html` | Web Serial 日志查看器：**xterm.js + WebGL 渲染**（vendor/ 于 `vendor/`，UMD 挂载注意：xterm 展开式、fit/webgl 命名空间式），默认 2M，**固件输出开关勾选框**（`data-sw` 位号须与 `src/log_switch.h` 一致；localStorage `switch` 记忆，连接打开即下发、`[BOOT]` 行补发，下发经 promise 链串行化——`WritableStream` 同一时刻只能有一个 writer），`[TUSB]` 三态过滤 + 正则内容过滤（叠加、忽略大小写，历史存 localStorage regexHist/regex，input 防抖 400ms 实时应用、回车/失焦记忆，无效红框保持上次视图），贴底跟随为 xterm 原生语义（视口 scroll 判贴底 + 回到底部角标），授权持久化 + `connect` 事件 + 100ms 轮询看门狗自动重连，ANSI 着色，模型上限 50000 行 |
 
 ## TinyUSB Configuration Notes
 

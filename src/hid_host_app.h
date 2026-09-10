@@ -17,8 +17,15 @@
 
 #include <stdint.h>
 
-// 行输出：格式化 + 追加 \r\n + 入队（hidkit_app.c 的 [HIDKIT]/[HKDBG] 行共用）
+// 行输出：格式化 + 追加 \r\n + 入队。**恒开** —— [ERROR] 这类异常行走它：
+// 其余全静音时不能连错误也哑掉。（语义层的 [HIDKIT]/[HKDBG] 行有自己的出口
+// emit_tagged，在 hidkit_app.c 里，与本函数无关。）
 void hid_app_emit(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
+// 冷路径信息行出口：挂载与描述符 dump（[MOUNT]/[DEVDS]/[CFGDS]/[STRDS]/
+// [HIDMT]/[RPTDS]/[UNHID]/[DEVRM]）。受运行期开关的 LOG_SW_INFO 门控
+// （见 log_switch.h）—— 关掉只抑制打印，描述符抓取状态机照常跑。
+void hid_app_emit_info(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 void tuh_mount_cb(uint8_t dev_addr);
 void tuh_umount_cb(uint8_t dev_addr);

@@ -11,6 +11,10 @@
  *
  * 事件行 / 诊断行两个 TAG 分开：前者是"设备做了什么"，后者是"库怎么想的"。
  * 排查"设备动作为什么没出来"看 [HKDBG]；看输入本身看 [HIDKIT]。
+ *
+ * 两族行各自受一个**运行期**开关位控制（LOG_SW_HIDKIT / LOG_SW_HKDBG，
+ * 见 log_switch.h）—— 这是叠加在上面那两个编译期开关之上的一层：编译期决定
+ * 代码在不在固件里，运行期决定现在出不出。
  */
 
 #include <stdio.h>
@@ -23,6 +27,7 @@
 #include "hidkit_xinput_glue.h"  /* hidkit_tusb_xinput_driver() */
 
 #include "uart_output.h"
+#include "log_switch.h"
 #include "hidkit_app.h"
 
 /* instance → hidkit 槽位；-1 = 本库没接管这个接口（[HKDBG] 里能看到原因） */
@@ -38,8 +43,14 @@ static int8_t s_slot[CFG_TUH_HID];
 
 // 两个开关都关掉时本文件不再输出任何行，helper 一并裁掉（否则 -Wunused-function）
 #if HIDKIT_APP_EVENTS || HIDKIT_DEBUG
-static void emit_tagged(const char *tag, const char *fmt, ...)
+// bit 是运行期开关位（log_switch.h），放首参：漏改调用点会编译报错而非静默变义。
+// 与上面的 #if 是两层正交的门：编译期决定"代码在不在固件里"，
+// 运行期决定"现在出不出"。format 属性是补上的 —— 此前五个格式串完全没被检查
+__attribute__((format(printf, 3, 4)))
+static void emit_tagged(uint8_t bit, const char *tag, const char *fmt, ...)
 {
+    if (!log_switch_on(bit)) return;
+
     char line[UARTO_REC_MAX];
 
     int n = snprintf(line, sizeof(line), "[%s]", tag);
@@ -71,7 +82,7 @@ static void emit_tagged(const char *tag, const char *fmt, ...)
 void hidkit_input_key(int8_t slot, uint16_t code, bool pressed)
 {
 #if HIDKIT_APP_EVENTS
-    emit_tagged("HIDKIT", "key slot=%d code=0x%04X %s",
+    emit_tagged(LOG_SW_HIDKIT, "HIDKIT", "key slot=%d code=0x%04X %s",
                 (int)slot, (unsigned)code, pressed ? "down" : "up");
 #else
     (void)slot; (void)code; (void)pressed;
@@ -82,7 +93,7 @@ void hidkit_input_key(int8_t slot, uint16_t code, bool pressed)
 void hidkit_input_mouse_abs(int8_t slot, int32_t dx, int32_t dy, int32_t wheel)
 {
 #if HIDKIT_APP_EVENTS
-    emit_tagged("HIDKIT", "mouse slot=%d dx=%d dy=%d wheel=%d",
+    emit_tagged(LOG_SW_HIDKIT, "HIDKIT", "mouse slot=%d dx=%d dy=%d wheel=%d",
                 (int)slot, (int)dx, (int)dy, (int)wheel);
 #else
     (void)slot; (void)dx; (void)dy; (void)wheel;
@@ -95,7 +106,7 @@ void hidkit_input_gamepad_abs(int8_t slot, int32_t ls_x, int32_t ls_y,
                               int32_t rs_x, int32_t rs_y, int32_t lt, int32_t rt)
 {
 #if HIDKIT_APP_EVENTS
-    emit_tagged("HIDKIT", "pad slot=%d ls=%d,%d rs=%d,%d lt=%d rt=%d",
+    emit_tagged(LOG_SW_HIDKIT, "HIDKIT", "pad slot=%d ls=%d,%d rs=%d,%d lt=%d rt=%d",
                 (int)slot, (int)ls_x, (int)ls_y, (int)rs_x, (int)rs_y,
                 (int)lt, (int)rt);
 #else
@@ -107,7 +118,7 @@ void hidkit_input_gamepad_abs(int8_t slot, int32_t ls_x, int32_t ls_y,
 void hidkit_input_dropped(int8_t slot, uint16_t vid, uint16_t pid)
 {
 #if HIDKIT_APP_EVENTS
-    emit_tagged("HIDKIT", "dropped slot=%d vid=%04X pid=%04X",
+    emit_tagged(LOG_SW_HIDKIT, "HIDKIT", "dropped slot=%d vid=%04X pid=%04X",
                 (int)slot, (unsigned)vid, (unsigned)pid);
 #else
     (void)slot; (void)vid; (void)pid;
@@ -136,7 +147,7 @@ void hidkit_debug_printf(const char *fmt, ...)
     while (n > 0 && (msg[n - 1] == '\n' || msg[n - 1] == '\r')) n--;
     msg[n] = '\0';
 
-    emit_tagged("HKDBG", "%s", msg);
+    emit_tagged(LOG_SW_HKDBG, "HKDBG", "%s", msg);
 #else
     (void)fmt;
 #endif

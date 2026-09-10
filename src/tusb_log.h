@@ -9,6 +9,10 @@
  * 前缀送入 uart_output，便于上位机按头筛选出栈内部日志。
  *
  * 仅允许 core1（tuh_task 所在核）调用链触碰本模块。
+ *
+ * 输出另受运行期开关的 LOG_SW_TUSB 位门控（见 log_switch.h）：关掉时
+ * tusb_log_printf() 在格式化之前早退，[TUSB] 一行不出、CPU 也不花。
+ * 默认就是关的（TinyUSB 级别 3 的日志量大，只在排查枚举/传输问题时才需要）。
  */
 
 // TinyUSB 日志出口（经 tusb_config.h 的 CFG_TUSB_DEBUG_PRINTF 挂接为
