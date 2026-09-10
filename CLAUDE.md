@@ -66,7 +66,7 @@ tuh_task()                                      uart_output_flush(): 批量出�
 | `src/tusb_config.h` | TinyUSB 配置：仅 Host 栈（CFG_TUD_ENABLED=0），Host HID×16 + Hub，枚举缓冲 512，`CFG_TUSB_DEBUG=3` |
 | `src/CMakeLists.txt` | 构建目标，链接 pico_stdlib, pico_pio_usb, tinyusb_host；stdio UART/USB 显式关闭 |
 | `CMakeLists.txt` | Top-level: sets board to `pico2`, includes Pico SDK |
-| `lib/pico_pio_usb/` | Vendored PIO-USB library (sekigon-gonnoc) |
+| `lib/pico_pio_usb/` | Vendored PIO-USB library（上游 sekigon-gonnoc/Pico-PIO-USB main 5a37a66，0.7.2-12+；含 RP2350-E9 workaround 与 in-transaction OOB memcpy 修复）。**注意**：D+/D− 引脚（GPIO12/13）在应用代码 `pico_hid_debugger.c` 的 `pio_cfg.pin_dp` 显式配置——上游 `PIO_USB_DP_PIN_DEFAULT` 是 GPIO0，不要依赖库内默认值 |
 | `tools/uart_monitor.py` | 上位机串口监视脚本（pyserial，自动探测/冻结/清屏） |
 | `index.html` | Web Serial 日志查看器：**xterm.js + WebGL 渲染**（vendor/ 于 `vendor/`，UMD 挂载注意：xterm 展开式、fit/webgl 命名空间式），默认 2M，`[TUSB]` 三态过滤 + 正则内容过滤（叠加、忽略大小写，历史存 localStorage regexHist/regex，input 防抖 400ms 实时应用、回车/失焦记忆，无效红框保持上次视图），贴底跟随为 xterm 原生语义（视口 scroll 判贴底 + 回到底部角标），授权持久化 + `connect` 事件 + 100ms 轮询看门狗自动重连，ANSI 着色，模型上限 50000 行 |
 
