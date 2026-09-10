@@ -516,15 +516,8 @@ bool pio_usb_host_endpoint_abort_transfer(uint8_t root_idx, uint8_t device_addre
   // Race potential: SOF timer can be called before transfer_aborted is actually set
   // and started the transfer. Wait 1 usb frame for transaction to complete.
   // On the next SOF timer, transfer_aborted will be checked and skipped
-  // NOTE(local): frame 调度运行在 alarm 回调，与调用者同核时该忙等依赖中断
-  // 抢占推进；若 abort 落在传输进行中可能永久阻塞。限定 2ms 上限后强制
-  // 终止传输（abort 的本义），避免 tuh_task 死锁
-  uint32_t wait_ms = 0;
   while (ep->has_transfer && ep->transfer_started) {
     busy_wait_ms(1);
-    if (++wait_ms >= 2) {
-      break;
-    }
   }
 
   // check if transfer is still active (could be completed)
