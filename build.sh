@@ -28,9 +28,13 @@ fi
 export PICO_SDK_PATH
 
 # ---- 可选参数：UART_BAUD 等环境变量转发为 CMake 缓存变量 ----
+# 未设置时显式清空缓存项：缓存值会跨次构建持久存在，
+# 不清空则历史上的 UART_BAUD 会一直覆盖固件默认值（uart_output.h）
 CMAKE_ARGS=()
 if [ -n "${UART_BAUD:-}" ]; then
     CMAKE_ARGS+=("-DUART_BAUD=${UART_BAUD}")
+else
+    CMAKE_ARGS+=("-DUART_BAUD=")
 fi
 
 echo ">> 配置（SDK：${PICO_SDK_PATH}）"
