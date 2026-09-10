@@ -91,11 +91,10 @@
     <option value="no-tusb">排除 [TUSB]</option>
   </select>
   <div class="regexbox">
-    <input id="regex" type="text" list="regexHistList" spellcheck="false"
+    <input id="regex" type="text" spellcheck="false"
            placeholder="正则过滤（可留空）" autocomplete="off"
            title="正则匹配整行内容（忽略大小写），与左侧过滤叠加；回车记忆，▾ 管理历史">
     <button id="btnRegexHist" title="历史正则：应用 / 删除">▾</button>
-    <datalist id="regexHistList"></datalist>
     <div id="regexMenu" style="display:none"></div>
   </div>
   <button id="btnExport" title="导出当前过滤视图为 .log 文件">导出 .log</button>
@@ -281,7 +280,9 @@ function rebuildTerm(lines) {
 }
 
 // ---------------------------------------------------------------- 正则过滤
-// 输入实时应用（400ms 防抖）；回车/失焦时记忆进历史；▾ 菜单可应用/删除。
+// 输入实时应用（400ms 防抖）；回车/失焦时记忆进历史；▾ 菜单与输入聚焦时
+// 显示按当前输入过滤的历史候选（自定义补全，不依赖 datalist——浏览器自身的
+// 表单历史下拉无法关闭，故用随机 name 断开其记忆关联，见 initRegexInput）。
 // 历史与当前值均存 localStorage，刷新页面自动恢复。
 const regexInput = $('regex'), regexMenu = $('regexMenu');
 
@@ -291,16 +292,6 @@ function getRegexHist() {
 }
 function setRegexHist(h) {
   localStorage.setItem(KEY_REGEX_HIST, JSON.stringify(h.slice(0, 20)));
-  refreshDatalist(h.slice(0, 20));
-}
-function refreshDatalist(hist) {
-  const dl = $('regexHistList');
-  dl.innerHTML = '';
-  for (const p of hist) {
-    const o = document.createElement('option');
-    o.value = p;
-    dl.appendChild(o);
-  }
 }
 function recordRegex(p) {
   if (!p) return;
@@ -332,13 +323,16 @@ function rebuildViewData() {
   viewLines = allLines.filter(l => passFilter(l.cls, l.text));
 }
 
+// 历史菜单：既是 ▾ 按钮的管理面板，也是输入时的补全下拉。
+// 候选按当前输入内容过滤（子串匹配，忽略大小写）
 function renderRegexMenu() {
-  const h = getRegexHist();
+  const q = regexInput.value.trim().toLowerCase();
+  const h = getRegexHist().filter(p => !q || p.toLowerCase().includes(q));
   regexMenu.innerHTML = '';
   if (!h.length) {
     const d = document.createElement('div');
     d.className = 'rm-empty';
-    d.textContent = '暂无历史正则（输入后回车即记忆）';
+    d.textContent = q ? '无匹配的历史正则' : '暂无历史正则（输入后回车即记忆）';
     regexMenu.appendChild(d);
     return;
   }
@@ -349,15 +343,19 @@ function renderRegexMenu() {
     pat.className = 'rm-pat';
     pat.textContent = p;
     pat.title = '点击应用';
+    // mousedown 阻止默认，避免输入框先失焦导致菜单在 click 前关闭
+    pat.addEventListener('mousedown', e => e.preventDefault());
     pat.addEventListener('click', () => {
       regexInput.value = p;
       applyRegex(p);
-      regexMenu.style.display = 'none';
+      recordRegex(p);
+      hideRegexMenu();
     });
     const del = document.createElement('button');
     del.className = 'rm-del';
     del.textContent = '✕';
     del.title = '从历史中删除';
+    del.addEventListener('mousedown', e => e.preventDefault());
     del.addEventListener('click', ev => {
       ev.stopPropagation();
       setRegexHist(getRegexHist().filter(x => x !== p));
@@ -369,13 +367,23 @@ function renderRegexMenu() {
   const clear = document.createElement('button');
   clear.className = 'rm-clear';
   clear.textContent = '清空历史';
+  clear.addEventListener('mousedown', e => e.preventDefault());
   clear.addEventListener('click', () => { setRegexHist([]); renderRegexMenu(); });
   regexMenu.appendChild(clear);
 }
 
+function showRegexMenu() { renderRegexMenu(); regexMenu.style.display = 'block'; }
+function hideRegexMenu() { regexMenu.style.display = 'none'; }
+let atMenuOpen = false;   // 聚焦/输入过程中补全菜单处于打开状态
+
+// 随机 name：Chrome 的表单历史按 (站点, 字段 name/id) 记忆，每次加载
+// 生成不同的 name 可使其永远查不到旧记录，从而只保留自定义补全
+regexInput.setAttribute('name', 'regex_' + Math.random().toString(36).slice(2));
+
 regexInput.addEventListener('input', () => {
   clearTimeout(regexTimer);
   regexTimer = setTimeout(() => applyRegex(regexInput.value.trim()), 400);
+  if (atMenuOpen) showRegexMenu();       // 输入过程中刷新补全候选
 });
 regexInput.addEventListener('keydown', e => {
   if (e.key === 'Enter') {
@@ -383,19 +391,24 @@ regexInput.addEventListener('keydown', e => {
     const v = regexInput.value.trim();
     applyRegex(v);
     recordRegex(v);
+    hideRegexMenu();
   } else if (e.key === 'Escape') {
-    regexMenu.style.display = 'none';
+    hideRegexMenu();
   }
 });
-regexInput.addEventListener('blur', () => recordRegex(regexInput.value.trim()));
+regexInput.addEventListener('focus', () => { atMenuOpen = true; showRegexMenu(); });
+regexInput.addEventListener('blur', () => {
+  atMenuOpen = false;
+  recordRegex(regexInput.value.trim());
+  setTimeout(hideRegexMenu, 120);        // 略延迟，让菜单行的 click 先落地
+});
 $('btnRegexHist').addEventListener('click', e => {
   e.stopPropagation();
   const show = regexMenu.style.display !== 'block';
-  renderRegexMenu();
-  regexMenu.style.display = show ? 'block' : 'none';
+  if (show) showRegexMenu(); else hideRegexMenu();
 });
 document.addEventListener('click', e => {
-  if (!regexMenu.contains(e.target) && e.target !== regexInput) regexMenu.style.display = 'none';
+  if (!regexMenu.contains(e.target) && e.target !== regexInput) hideRegexMenu();
 });
 
 // ---------------------------------------------------------------- 字节流 → 行
@@ -586,7 +599,6 @@ window.__debug = { append: appendLine, term: () => term };
   // 恢复上次的正则过滤（不重复记忆）
   regexInput.value = localStorage.getItem(KEY_REGEX) || '';
   if (regexInput.value) applyRegex(regexInput.value);
-  refreshDatalist(getRegexHist());
   // 页面加载即恢复连接：已授权端口不需要任何用户手势
   const ports = await navigator.serial.getPorts();
   if (!ports.length) return;
