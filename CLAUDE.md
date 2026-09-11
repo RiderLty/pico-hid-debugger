@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 USB HID 设备调试器固件，运行于 **Raspberry Pi Pico 2 (RP2350)**。
 
-PIO-USB 端口（GPIO12/13）枚举插入的 USB 设备（含 Hub），挂载时经异步控制传输抓取并 dump：设备描述符、配置描述符（原始整块）、字符串描述符（语言 ID/厂商/产品/序列号）；HID 接口挂载时 dump 接口信息与报告描述符；运行时把每份 HID 报告按行 hexdump。**原始报文不做任何语义解释**——本固件首先是"所见即原始行为"的调试采集器。
+PIO-USB 端口（GPIO12/13 板载母座 + GPIO8/9 第二 host 口，`tuh_init()` 后 `pio_usb_host_add_port(8, ...)`）枚举插入的 USB 设备（含 Hub），挂载时经异步控制传输抓取并 dump：设备描述符、配置描述符（原始整块）、字符串描述符（语言 ID/厂商/产品/序列号）；HID 接口挂载时 dump 接口信息与报告描述符；运行时把每份 HID 报告按行 hexdump。**原始报文不做任何语义解释**——本固件首先是"所见即原始行为"的调试采集器。
 
 在其之上**叠加**一层语义解析：报文同时喂给 [hidkit](https://github.com/RiderLty/hidkit)（`lib/hidkit` 子模块，纯 C 解析库），事件以 `[HIDKIT]` 行输出、库内诊断以 `[HKDBG]` 行输出；Xbox 手柄这类没有 HID 接口的设备由 `lib/hidkit-tusb-xinput`（XInput 类驱动 + 归一化接线）接管后走同一个出口。这一层是纯附加的：语义解析不改变原始采集，两者各自独立开关。
 
@@ -42,7 +42,7 @@ No test suite or linter is configured.
 **双核分工 + SPSC 队列（无 Device 栈）：**
 
 ```
-core1 (PIO-USB Host, GPIO12/13)                 core0 (UART0, GPIO2/3, 2000000)
+core1 (PIO-USB Host, GPIO12/13 + GPIO8/9)          core0 (UART0, GPIO2/3, 2000000)
 ─────────────────────────────────────           ──────────────────────────────
 tuh_task()                                      while(1) 循环：
  └ tuh_mount_cb        [hid_host_app]             1. log_switch_poll()  排空 UART0 RX
@@ -68,7 +68,8 @@ tuh_task()                                      while(1) 循环：
 - 运行期掩码 `s_mask` 是**单字节 `volatile`**，core0 写、core1（含中断上下文）读，**刻意不加临界区**（对齐字节访问在 ARMv8-M 上原子、SRAM 无 cache、无伴随数据）。改多字段结构或配计数器就必须加锁。
 - 判定放**最外层**（`hid_app_emit_info` / `hexdump` / `emit_tagged` / `tusb_log_printf` 入口）：关掉时连格式化都不做，且一次 dump 全有或全无。`hexdump` / `emit_tagged` 的开关位是**首参**，漏改调用点会编译报错而非静默变义。
 - **开关只管打印，不管解析**：`[HID]` 关掉时 `hidkit_app_report()` 照常调用，`INFO` 关掉时描述符抓取状态机照常跑。
-- 系统时钟必须为 12MHz 整数倍（当前 120MHz），PIO-USB 时序依赖。
+- 系统时钟必须为 12MHz 整数倍（当前 240MHz），PIO-USB 时序依赖；240MHz 下 2Mbaud 分频仍为整数（120），零波特率误差。
+- 第二 PIO host 口（GPIO8/9）：`tuh_init(1)` 之后 `pio_usb_host_add_port(8, PIO_USB_PINOUT_DPDM)`（须在 `tuh_init()` 之后，依赖库内已初始化的 `pio_port[0]`），TinyUSB 侧映射为 rhport2 经 attach 事件枚举。与 pico-hid-mapper 同一 PIO-USB 提交下验证过。
 - 描述符抓取是**异步**控制传输链（tuh_descriptor_get_* 完成回调里发起下一步）；状态按 dev_addr 分槽（`desc_state_t`）。设备拔出时 `tuh_umount_cb` 将 step 置 IDLE，迟到的完成回调据此丢弃。
 - HID 报文回调里先输出再 `tuh_hid_receive_report()` 重新订阅，报文流才持续。
 
@@ -115,7 +116,7 @@ tuh_task()                                      while(1) 循环：
 
 ## Known Limitations
 
-1. **UART 带宽**：2Mbaud ≈ 200KB/s（120MHz 时钟下分频恰为整数，零波特率误差）。1kHz 鼠标全量输出（报文行 + 每报文 TUSB 日志）≈ 106KB/s，占 53%；再叠 `[HIDKIT]` 事件行（约 40B/报文）约 140KB/s。更高流量用 `cmake -DUART_BAUD=` 提速（RP2350 UART 可跑 5Mbps+）、降 `CFG_TUSB_DEBUG`，或 `-DHIDKIT_APP_EVENTS=0`。队列满丢行计数，排空后 `[DROP]` 补报。
+1. **UART 带宽**：2Mbaud ≈ 200KB/s（240MHz 时钟下分频仍为整数，零波特率误差）。1kHz 鼠标全量输出（报文行 + 每报文 TUSB 日志）≈ 106KB/s，占 53%；再叠 `[HIDKIT]` 事件行（约 40B/报文）约 140KB/s。更高流量用 `cmake -DUART_BAUD=` 提速（RP2350 UART 可跑 5Mbps+）、降 `CFG_TUSB_DEBUG`，或 `-DHIDKIT_APP_EVENTS=0`。队列满丢行计数，排空后 `[DROP]` 补报。
 2. **语义层只覆盖 hidkit 认识的设备**（boot 键鼠 / NKRO 键盘 / 描述符可解析的鼠标 / 布局表内手柄）。其余设备 `[HKDBG]` 报 `unhandled`、不占槽位，原始采集照旧——这是常态不是故障。**XInput 路径在本仓库只做过编译级验证**（本机没有 Xbox 手柄），握手时序与重订阅逻辑沿用**已在真机上验证过**的实现。
 3. 描述符抓取与 HID 驱动自身的控制传输（报告描述符请求等）共用设备控制通道，由 TinyUSB 排队串行化；抓取失败（如设备不支持字符串）仅 `[ERROR]`/跳过，不影响报文流。
 4. 多配置设备只 dump 配置 1；字符串非 ASCII 字符显示 `?`。

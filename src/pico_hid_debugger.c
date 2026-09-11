@@ -29,7 +29,8 @@
 // 基本信息，运行时把原始报文按行 hexdump，全部经 UART0（GPIO2/3，
 // 2Mbaud）输出。原生 USB Device 栈禁用（CFG_TUD_ENABLED=0），Pico
 // 在上位机上不再是任何 USB 设备，仅作为独立的调试采集器。
-// TinyUSB 中 roothub port0 是原生 USB 控制器（不初始化），port1 是 pico-pio-usb。
+// TinyUSB 中 roothub port0 是原生 USB 控制器（不初始化），port1 是 pico-pio-usb
+// （GPIO12/13 板载母座），port2 是第二 PIO host 口（GPIO8/9，tuh_init 后 add_port）。
 //
 // 原始 hexdump 之外另叠一层语义事件（[HIDKIT]）与库内诊断（[HKDBG]）：
 // 由 lib/hidkit（解析核心）与 lib/hidkit-tusb-xinput（Xbox 类驱动）提供，
@@ -127,6 +128,11 @@ void core1_main() {
   // 在 core1 上初始化 PIO-USB Host 栈 (roothub port1)，用于处理 USB SOF 中断
   tuh_init(1);
 
+  // 第二物理 host 口 GPIO8(D+)/GPIO9(D-)：须在 tuh_init() 之后调用（依赖库内
+  // 已初始化的 pio_port[0]），TinyUSB 侧映射为 rhport2（root_id+1）经 attach
+  // 事件枚举。与参考实现 pico-hid-mapper 相同（同一 PIO-USB 提交验证过）
+  pio_usb_host_add_port(8, PIO_USB_PINOUT_DPDM);
+
   while (true) {
     tuh_task(); // TinyUSB Host 任务循环
   }
@@ -134,8 +140,9 @@ void core1_main() {
 
 // core0: UART 输出
 int main(void) {
-  // 默认 150MHz 不合适，系统时钟必须是 12MHz 的整数倍（PIO-USB 时序依赖）
-  set_sys_clock_khz(120000, true);
+  // 默认 150MHz 不合适，系统时钟必须是 12MHz 的整数倍（PIO-USB 时序依赖）。
+  // 240MHz：UART 2Mbaud 分频仍为整数（120），PIO-USB 的 USB 事务时序裕量更大
+  set_sys_clock_khz(240000, true);
 
   // 初始化 UART0 与跨核队列、临界区。必须先于 core1 启动：
   // 生产者随时可能入队，串口与自旋锁必须先就绪
