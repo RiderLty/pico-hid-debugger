@@ -188,7 +188,8 @@ cmake -S . -B build -DHIDKIT_LIB_DEBUG=0     # 只关库内诊断
 ```bash
 git clone https://github.com/RiderLty/pico-hid-debugger.git
 cd pico-hid-debugger
-./build.sh    # 一键构建：自动初始化子模块 + 打补丁 + 探测 SDK（../pico-sdk 或 ~/pico-sdk）
+./build.sh                 # 一键构建：自动初始化子模块 + 打补丁 + 探测 SDK（../pico-sdk 或 ~/pico-sdk）
+./build.sh --update-hidkit # 同上，但先把两个 hidkit 子模块跟到远端最新再编译
 ```
 
 `build.sh` 会顺带完成两件初始化工作（幂等，可反复执行），因此 `git clone` 后无需任何手工配置：
@@ -215,6 +216,25 @@ make -j$(nproc)
 > **另一处补丁**（与上面无关，继续保留）：**SDK 捆绑的 TinyUSB 0.18.0**（`src/host/hub.c`）在 hub 端口变化流程里，任何一次传输失败就**永久放弃**（`hub_xfer_cb` 用 `TU_VERIFY` 提前返回 → 状态轮询不再入队；五处完成回调 `TU_ASSERT` 直接断言停摆），而 pio-usb 这类 HCD 出现事务级错误是常态。上游已在 **TinyUSB PR #2994**（0.19.0 起）改为失败即重新入队轮询。该补丁在 **configure 期自动**生成 `hub.c` 修正副本到 build 目录并替换源列表（与既有的 `hid_host.c` 三级日志补丁同一手法），**SDK 文件始终原样**；SDK 内 TinyUSB 升到 ≥ 0.19.0 后自动失效，无需手工步骤。
 
 可选：`UART_BAUD=921600 ./build.sh` 覆盖 UART 波特率（默认 2M，须与上位机一致且适配器支持）。
+
+### 更新 hidkit 子模块
+
+```bash
+./build.sh --update-hidkit
+```
+
+把 `lib/hidkit` 与 `lib/hidkit-tusb-xinput` 跟到**远端 `main`**，再构建。三条要记住的：
+
+- **跟的是远端，不是你的本地仓库。** 在 `~/hidkit` 里改了但**没 push** 的提交，这个参数带不进来（脚本会这么提示你）。要同步本地改动，先 push。
+- **不动 `lib/pico_pio_usb`。** 那个子模块是**故意钉死**在旧血脉 `9510f79` 的（0.6.0 重写会破坏 hub 上设备拔出，见「[关于 PIO-USB 版本](#构建)」），跟远端走等于把它升坏 —— 脚本逐个点名子模块，不用全量 `--remote`。
+- **它只切子模块工作区，父仓库还没记录。** 构建完记得落成一次提交，否则下次 `git submodule update` 会把指针退回原处：
+
+  ```bash
+  git add lib/hidkit lib/hidkit-tusb-xinput
+  git commit -m "子模块跟进 hidkit <提交>"
+  ```
+
+不带这个参数时构建**绝不碰子模块** —— 版本变更要能落在 git 历史里，不能让构建过程偷偷改。
 
 输出：`build/src/pico-hid-debugger.uf2`
 

@@ -19,7 +19,8 @@ PIO-USB 端口（GPIO12/13）枚举插入的 USB 设备（含 Hub），挂载时
 Requires `PICO_SDK_PATH` set, ARM cross-compiler (`gcc-arm-none-eabi`, `libnewlib-arm-none-eabi`), and CMake >= 3.13.
 
 ```bash
-./build.sh    # 自动：初始化子模块 → 打 PIO-USB 补丁 → 配置 → 编译
+./build.sh                 # 自动：初始化子模块 → 打 PIO-USB 补丁 → 配置 → 编译
+./build.sh --update-hidkit # 同上，但先把两个 hidkit 子模块跟到远端最新再编译
 ```
 
 或手动：
