@@ -45,7 +45,7 @@ PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显
 | `[HIDMT] dev=%u vid=%04x pid=%04x itf=%u proto=%s cls=%02x sub=%02x eps=%u` | HID 接口挂载（proto: None/Keyboard/Mouse） |
 | `[RPTDS] dev=%u itf=%u len=%u off=..: <hex>` | HID 报告描述符原始转储 |
 | `[HID]   dev=%u itf=%u len=%u off=%u: <hex>` | **原始报文**（超 16 字节折行，`off=` 递增标注行内偏移）。受运行期开关控制，见「[运行期输出开关](#运行期输出开关)」 |
-| `[HIDKIT] key slot=%d code=0x%04X down\|up` | **语义事件**（键/鼠标按键/手柄按键统一出口，`code` 的段前缀区分类型：`0x00xx` 键盘 HID Usage ID、`0x01xx` 鼠标按键序号、`0x02xx` 手柄 `BTN_*`）。**仅在状态变化时**输出；`[HID]` 行也开着时紧跟触发它的那一行之后（上位机默认视图里 `[HID]` 是关的，所以通常看不到那行） |
+| `[HIDKIT] key slot=%d code=0x%04X name=%s down\|up` | **语义事件**（键/鼠标按键/手柄按键统一出口，`code` 的段前缀区分类型：`0x00xx` 键盘 HID Usage ID、`0x01xx` 鼠标按键序号、`0x02xx` 手柄 `BTN_*`）。`name=` 是 `code` 对应的按键名（`src/key_names.c` 的词表，命名与 hidkit 的宏一致：`KEY_A` / `MOUSE_BUTTON_LEFT` / `BTN_DPAD_UP`，可直接回 grep `hidkit_codes.h`；词表外的 code 显示 `?`）—— **只加可读视图，`code` 原值照旧**。**仅在状态变化时**输出；`[HID]` 行也开着时紧跟触发它的那一行之后（上位机默认视图里 `[HID]` 是关的，所以通常看不到那行） |
 | `[HIDKIT] mouse slot=%d dx=%d dy=%d wheel=%d` | 鼠标位移与滚轮（仅非零时输出） |
 | `[HIDKIT] pad slot=%d ls=%d,%d rs=%d,%d lt=%d rt=%d` | 手柄绝对状态。**每份解析成功的报文都输出**（手柄报文本身就是当前绝对状态，不去重），故 1kHz 手柄下这行是持续的 |
 | `[HIDKIT] dropped slot=%d vid=%04X pid=%04X` | 设备被丢弃（槽位耗尽且策略为 `DROP_NEW`；本固件用默认的 `EVICT_IDLE`，走不到） |
@@ -149,13 +149,13 @@ python3 -c "import serial; serial.Serial('/dev/tty.usbserialXXXX', 2000000).writ
 下面这段不是手写的，是用**本固件链接的同一份 hidkit** 在主机侧跑"描述符 + 报文"得到的（探针按 `hidkit_app.c` 的行格式打印）：
 
 ```
-[HKDBG]  hidkit: slot 0 <- 046d:c52b proto=1 kind=2      # 认领键盘（boot 协议，无需描述符）
-[HIDKIT] key slot=0 code=0x0004 down                     # 按下 A（HID Usage 0x04）
-[HIDKIT] key slot=0 code=0x0004 up                       # 抬起
-[HKDBG]  hidkit: slot 1 <- 046d:c52b proto=2 kind=1      # 认领鼠标（按报告描述符解析）
-[HIDKIT] mouse slot=1 dx=5 dy=-5 wheel=0                 # 向右 5、向上 5
-[HIDKIT] key slot=1 code=0x0100 up                       # 鼠标左键抬起
-[HKDBG]  hidkit: unhandled 046d:c52b proto=0 desc=none   # 不认识：不占槽位，原始采集照旧
+[HKDBG]  hidkit: slot 0 <- 046d:c52b proto=1 kind=2       # 认领键盘（boot 协议，无需描述符）
+[HIDKIT] key slot=0 code=0x0004 name=KEY_A down           # 按下 A（HID Usage 0x04）
+[HIDKIT] key slot=0 code=0x0004 name=KEY_A up             # 抬起
+[HKDBG]  hidkit: slot 1 <- 046d:c52b proto=2 kind=1       # 认领鼠标（按报告描述符解析）
+[HIDKIT] mouse slot=1 dx=5 dy=-5 wheel=0                  # 向右 5、向上 5
+[HIDKIT] key slot=1 code=0x0100 name=MOUSE_BUTTON_LEFT up # 鼠标左键抬起
+[HKDBG]  hidkit: unhandled 046d:c52b proto=0 desc=none    # 不认识：不占槽位，原始采集照旧
 ```
 
 读日志时两个容易误判的点：
@@ -283,6 +283,7 @@ src/
 ├── pico_hid_debugger.c   # 入口：双核初始化（core1=USB Host，core0=UART 输出）
 ├── hid_host_app.c/.h     # 信息采集：TinyUSB 回调、描述符抓取状态机、报文 hexdump
 ├── hidkit_app.c/.h       # 语义层接线：hidkit 出口函数 → [HIDKIT]/[HKDBG] 行；XInput 类驱动注册
+├── key_names.c/.h        # 按键 code → 名称词表（[HIDKIT] key 行的 name= 字段）
 ├── uart_output.c/.h      # 跨核 SPSC 队列 → UART0（GPIO2/3，2000000）+ core0 直写出口
 ├── log_switch.c/.h       # 运行期输出开关：UART 下行单字节 → 位掩码，[CTRL] 回执
 ├── tusb_log.c/.h         # TinyUSB 内部日志桥接：tu_printf 钩子 → [TUSB] 行

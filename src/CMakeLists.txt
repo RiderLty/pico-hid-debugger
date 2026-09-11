@@ -19,6 +19,7 @@ target_sources(${target_name} PRIVATE
  pico_hid_debugger.c
  hid_host_app.c
  hidkit_app.c
+ key_names.c
  uart_output.c
  log_switch.c
  tusb_log.c

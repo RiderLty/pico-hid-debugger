@@ -88,6 +88,7 @@ tuh_task()                                      while(1) 循环：
 | `src/pico_hid_debugger.c` | 入口：`main()`（core0：UART 初始化与输出循环）、`core1_main()`（core1：tuh 配置与任务循环） |
 | `src/hid_host_app.c/.h` | 信息采集模块：全部 tuh 回调、描述符抓取状态机（异步控制传输链）、hexdump 格式化；HID 三个回调在 dump 之后各多一步 `hidkit_app_*` 转发。**两个行出口**：`hid_app_emit()`（恒开，`[ERROR]` 走它）与 `hid_app_emit_info()`（受 `LOG_SW_INFO` 门控，挂载/描述符行走它），共用 static 内核 `emit_v()`。`hexdump()` 首参是开关位 |
 | `src/hidkit_app.c/.h` | **语义层接线**：实现 hidkit 的四个弱符号出口（`hidkit_input_*`）与库内诊断出口（`hidkit_debug_printf`）→ `[HIDKIT]`/`[HKDBG]` 行；维护 instance→槽位映射；**定义 `usbh_app_driver_get_cb()`** 转发 XInput 适配器的类驱动（该钩子全工程只能有一个定义，适配器刻意不定义）。static `emit_tagged(bit, tag, fmt, ...)` 首参是开关位 |
+| `src/key_names.c/.h` | **按键名词表**：hidkit 统一按键 code → 名称，给 `[HIDKIT] key` 行的 `name=` 字段用。名称即 `hidkit_codes.h` 的宏名（`KEY_A`/`MOUSE_BUTTON_LEFT`/`BTN_DPAD_UP`），表按该头文件逐条生成、下标 = Usage ID / 按键序号 / `BTN_*`，词表外返回 `NULL`（打印 `?`）；`code=` 原值不受影响。纯查表、只在按键边沿调用，受 `HIDKIT_APP_EVENTS` 门控（置 0 时连词表都不进 flash） |
 | `src/log_switch.c/.h` | **运行期输出开关**：位定义（`LOG_SW_*`/`LOG_SW_DEFAULT`=0x13）、`log_switch_init()`（core0，置默认值 + 读丢弃 RX 残留，必须在 launch core1 之前）、`log_switch_on()`（热路径只读单字节 volatile）、`log_switch_poll()`（core0 排空 UART RX、应用掩码、回 `[CTRL]`）。位表是**固件与 index.html 的接口**，改这里要同步改 `index.html` 的 `data-sw` 与 README 的表 |
 | `src/uart_output.c/.h` | 跨核传输层：SPSC 字节块队列、UART0 初始化（GPIO2/3 @ 2000000）、core0 批量写出、core0 直写出口 `uart_output_write_direct()`；RX 上拉在此设置（防悬空噪声被当成开关指令） |
 | `src/tusb_log.c/.h` | TinyUSB 内部日志桥接：`CFG_TUSB_DEBUG_PRINTF` 挂接 `tu_printf`，片段按行组装（core1 临界区防穿插），`[TUSB]` 头入队 |

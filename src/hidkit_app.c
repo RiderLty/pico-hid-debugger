@@ -29,6 +29,7 @@
 #include "uart_output.h"
 #include "log_switch.h"
 #include "hidkit_app.h"
+#include "key_names.h"
 
 /* instance → hidkit 槽位；-1 = 本库没接管这个接口（[HKDBG] 里能看到原因） */
 static int8_t s_slot[CFG_TUH_HID];
@@ -79,11 +80,14 @@ static void emit_tagged(uint8_t bit, const char *tag, const char *fmt, ...)
 
 // 键盘 + 鼠标按键 + 手柄按键统一出口，code 的段前缀区分类型（hidkit_codes.h）：
 //   0x00xx 键盘 HID Usage ID / 0x01xx 鼠标按键序号 / 0x02xx 手柄 BTN_*
+// name= 是 code 的可读名（key_names.c 的词表），**code 原值照旧保留**：本固件首先
+// 是"所见即原始"的采集器，语义层只叠加可读性。词表外的 code 显示 "?"
 void hidkit_input_key(int8_t slot, uint16_t code, bool pressed)
 {
 #if HIDKIT_APP_EVENTS
-    emit_tagged(LOG_SW_HIDKIT, "HIDKIT", "key slot=%d code=0x%04X %s",
-                (int)slot, (unsigned)code, pressed ? "down" : "up");
+    const char *const name = key_name_lookup(code);
+    emit_tagged(LOG_SW_HIDKIT, "HIDKIT", "key slot=%d code=0x%04X name=%s %s",
+                (int)slot, (unsigned)code, name ? name : "?", pressed ? "down" : "up");
 #else
     (void)slot; (void)code; (void)pressed;
 #endif
