@@ -8,7 +8,7 @@
 9510f79  "Apply pin order settings to each port"   2024-06-02
 ```
 
-外加**一枚**补丁（`patches/pio_usb/0001-sdk2-compat.patch`，见下）。
+外加**三枚**补丁（`patches/pio_usb/000{1,2,4}-*.patch`，见下）。
 TinyUSB 侧的 hub 驱动韧性补丁是另一回事，在顶层 `CMakeLists.txt` 里 configure 期
 生成副本（与 SDK 文件无关），不在这里。
 
@@ -42,13 +42,18 @@ ffb1647  retired all transferring endpoint if device is disconnected  ★
 **兼容性已实测**：`9510f79` 提供 TinyUSB 0.18 的 `hcd_pio_usb.c` 需要的全部 API
 （带 `pinout` 的 `pio_usb_host_add_port`、`endpoint_open/transfer/abort`、
 `send_setup`、`close_device`、`port_reset_start/end`、`bus_get_line_state`），
-配 pico-sdk 2.3.0 可正常构建（旧血脉缺的 SDK 2 兼容由下面那枚补丁补上）。
+配 pico-sdk 2.3.0 可正常构建（旧血脉缺的 SDK 2 兼容由补丁 0001 补上）。
 
-## 唯一的一枚补丁
+## 当前的三枚补丁
 
 | 文件 | 来源 | 作用 |
 | --- | --- | --- |
 | `0001-sdk2-compat.patch` | 上游 `75e62ad` + `0a14a34`（"fix build with pico sdk v2" / "Remove pio_sm_set_jmp_pin Pico SDK 2 has it"） | 旧血脉**从未**拿到 Pico SDK 2 的兼容修复（那两笔提交都在 0.6.0 重写之后）：① `usb_rx.pio` 里的本地 `pio_sm_set_jmp_pin` 与 SDK 2 自带同名函数**重定义冲突** → 用 `#if PICO_SDK_VERSION_MAJOR < 2` 包住；② `usb_rx.pio.h` / `usb_tx.pio.h` 由旧版 pioasm 生成，缺 SDK 2 的 `pio_program_t` 新字段（`pio_version`、`used_gpio_ranges`）→ 用当前 pioasm 重新生成。**纯构建兼容，无语义改动** |
+| `0002-device-se0-timeout.patch` | 本仓库 | `pio_usb_device_task()` 在宿主断开/异常总线状态导致 SE0 持续时会**永久自旋**（上层任务全部停摆，表现为复位）；加 20ms 上限跳出，把控制权还给主循环。**本仓库的 device 模式不走 pio-usb**，保留这枚补丁是为了与子模块状态保持一致 |
+| `0004-host-stall-recover.patch` | 本仓库 | **总线静默检测 / 失联自愈**：主机被长时间冻结（写 flash 时的 multicore_lockout）会让设备在 3ms 无 SOF 后 suspend，而本栈不实现 resume → 端口永久失效。做法是在 SOF 回调里测「真实无 SOF 时长」，超阈值（默认 2500us，`-DPIO_USB_STALL_RECOVER_US=` 覆盖，0=关闭）经复核窗后对 root 口做一次「软插拔」（拔/插各一帧），靠重新枚举的总线复位唤醒设备；对外给出 pending/veto/force_reconnect 与三个计数。**实测**：HID 设备能救回来；但 hub 后面的总线供电 Xbox 手柄救不回（见 CLAUDE.md 已知限制第 8 条） |
+
+编号里没有 0003：活动目录的编号沿用历史（0003 从未在活动目录里存在过；
+`patches/pio_usb_archive_0.6plus/` 里的 0001~0009 是**另一套**针对 0.6+ 血脉的补丁）。
 
 用法（`build.sh` 会自动调用）：
 

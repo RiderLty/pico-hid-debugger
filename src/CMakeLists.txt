@@ -4,6 +4,15 @@ add_executable(${target_name})
 # UART0 波特率可编译期覆盖（默认 2000000，见 uart_output.h；
 # 须与上位机选择一致且 USB-UART 适配器支持）
 set(UART_BAUD "" CACHE STRING "UART0 baudrate override, e.g. 921600")
+
+# 库内「总线静默 → 失联自愈」的触发阈值（实现见 patches/pio_usb/ 的
+# host-stall-recover 补丁；pico_pio_usb 是 INTERFACE 库，宏从这里下到宿主 TU）。
+#   2500 = 补丁默认（USB 规范：设备 3ms 无总线活动即 suspend）；0 = 关闭自愈。
+# 该值曾是冻结扫描实验量出来的：250us 步进下 2750us 设备仍存活、3000us 失联。
+set(PIO_USB_STALL_RECOVER_US 2500 CACHE STRING "PIO-USB 失联自愈阈值(us)，0=关闭")
+target_compile_definitions(${target_name} PRIVATE
+  PIO_USB_STALL_RECOVER_US=${PIO_USB_STALL_RECOVER_US})
+
 if(UART_BAUD)
   target_compile_definitions(${target_name} PRIVATE UARTO_BAUDRATE=${UART_BAUD})
 endif()

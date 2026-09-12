@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # 给 lib/pico_pio_usb 子模块打补丁（幂等）。
 #
-# 当前只有一枚补丁：0001-sdk2-compat（旧血脉缺的 Pico SDK 2 构建兼容）。
-# 子模块固定在旧血脉顶端 9510f79，说明见 patches/pio_usb/README.md。
+# 当前三枚补丁（见 patches/pio_usb/README.md）：
+#   0001-sdk2-compat         旧血脉缺的 Pico SDK 2 构建兼容（纯构建，无语义改动）
+#   0002-device-se0-timeout  device 任务在 SE0 持续时永久自旋 → 加 20ms 上限
+#   0004-host-stall-recover  总线静默检测 / 失联自愈（root 口软插拔）
+# 子模块固定在旧血脉顶端 9510f79。
 #
 # 用法：
 #   ./scripts/apply-patches.sh            # 初始化子模块并应用（已应用的跳过）
@@ -68,7 +71,7 @@ for patch in "$PATCH_DIR"/*.patch; do
     name="$(basename "$patch")"
 
     # 已应用判定：优先 reverse-check（最准）。但补丁是**叠加**的——后续补丁改到
-    # 同一段上下文时，reverse-check 会失效（实测 0004 改了 0003 的相邻行）。
+    # 同一段上下文时，reverse-check 会失效。
     # 那就退化为"看这条补丁新增的一行是否还在位"：够用且不会误判为可应用
     # （真漏打时下面的 CMake 守卫也会直接报错，不会静默编出坏固件）。
     applied="no"
