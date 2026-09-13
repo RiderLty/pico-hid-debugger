@@ -26,7 +26,7 @@ Requires `PICO_SDK_PATH` set, ARM cross-compiler (`gcc-arm-none-eabi`, `libnewli
 或手动：
 
 ```bash
-git submodule update --init --recursive   # lib/pico_pio_usb 是子模块
+git submodule update --init --recursive   # lib/Pico-PIO-USB 是子模块
 ./scripts/apply-patches.sh                # 子模块补丁（当前=SDK2 构建兼容，幂等）
 mkdir build && cd build
 cmake ..
@@ -97,7 +97,7 @@ tuh_task()                                      while(1) 循环：
 | `CMakeLists.txt` | Top-level: sets board to `pico2`, includes Pico SDK |
 | `lib/hidkit/` | **语义解析核心**（git 子模块，独立开源仓库 [RiderLty/hidkit](https://github.com/RiderLty/hidkit)）。纯 C、零平台依赖、static 内存；报告描述符 → 字段表，报文 → 事件，出口是**弱符号函数**（`hidkit_input_*`）。**只读不改**：要升级就 checkout 子模块到新提交；缺陷与残余限制记在它自己的 `KNOWN_ISSUES.md`（目前 7 条已修：5 条移植时故意保留的描述符缺陷 + `Report Count = 0` 规范符合性 + 一条**移植引入的回归**：HID 手柄布局表曾被槽位守界挡住探测调用而恒不命中，真机表现为 `unhandled 054c:0ce6`，DS5 全不认识）。容量/策略宏见其 `src/hidkit_config.h` |
 | `lib/hidkit-tusb-xinput/` | **XInput 适配器**（git 子模块，独立开源仓库 [RiderLty/hidkit-tusb-xinput](https://github.com/RiderLty/hidkit-tusb-xinput)）：TinyUSB XInput 类驱动（移植件）+ 接线层（`tuh_xinput_*` → `hidkit_xinput_report()`）。同样**只读不改**。`CFG_TUH_XINPUT` 在 `src/tusb_config.h` 里打开（关掉则整个驱动编译掉） |
-| `lib/pico_pio_usb/` | PIO-USB 库，**git 子模块**锁定上游 sekigon-gonnoc/Pico-PIO-USB **旧血脉顶端 `9510f79`**（0.6.0 重写之前；含 `0f747aa` "retired all transferring endpoint if device is disconnected"）。**本仓库放弃低速支持换 hub 热插拔可靠**，版本对照与理由见 `patches/pio_usb/README.md`；`[BOOT]` 行的 `piousb=` 即该提交，排查前先核对。**不要直接改子模块里的文件**：需要的修改走 `patches/pio_usb/` + `scripts/apply-patches.sh`。**注意**：D+/D− 引脚（GPIO12/13）在应用代码 `pico_hid_debugger.c` 的 `pio_cfg.pin_dp` 显式配置——上游 `PIO_USB_DP_PIN_DEFAULT` 是 GPIO0，不要依赖库内默认值 |
+| `lib/Pico-PIO-USB/` | PIO-USB 库，**git 子模块**锁定上游 sekigon-gonnoc/Pico-PIO-USB **旧血脉顶端 `9510f79`**（0.6.0 重写之前；含 `0f747aa` "retired all transferring endpoint if device is disconnected"）。**本仓库放弃低速支持换 hub 热插拔可靠**，版本对照与理由见 `patches/pio_usb/README.md`；`[BOOT]` 行的 `piousb=` 即该提交，排查前先核对。**不要直接改子模块里的文件**：需要的修改走 `patches/pio_usb/` + `scripts/apply-patches.sh`。**注意**：D+/D− 引脚（GPIO12/13）在应用代码 `pico_hid_debugger.c` 的 `pio_cfg.pin_dp` 显式配置——上游 `PIO_USB_DP_PIN_DEFAULT` 是 GPIO0，不要依赖库内默认值 |
 | `patches/pio_usb/` | 三枚补丁（基线 = 子模块锁定提交 9510f79）：`0001-sdk2-compat`（旧血脉缺的 Pico SDK 2 构建兼容：本地 `pio_sm_set_jmp_pin` 与 SDK2 重名冲突 + 生成头缺 `pio_version` 字段）、`0002-device-se0-timeout`（device 任务在 SE0 持续时的自旋上限）、`0004-host-stall-recover`（**总线静默检测 / 失联自愈**，阈值 `PIO_USB_STALL_RECOVER_US`；实测能救回 HID，救不回 hub 后总线供电的 Xbox 手柄 —— 见已知限制第 8 条）。针对 0.6+ 血脉写的 9 枚补丁与整轮调查结论归档在 `patches/pio_usb_archive_0.6plus/`（当前不使用） |
 | `scripts/apply-patches.sh` | 幂等打补丁脚本（默认应用 / `--status` / `--revert`）；`build.sh` 与 CMake 配置期都会检查补丁是否在位 |
 | `tools/uart_monitor.py` | 上位机串口监视脚本（pyserial，自动探测/冻结/清屏） |
@@ -134,7 +134,7 @@ tuh_task()                                      while(1) 循环：
 
 - All source comments and commit messages are in **Chinese**.
 - Compiler flags: `-Wall -Wextra` with memory usage reporting via `--print-memory-usage`.
-- `lib/pico_pio_usb/` 是 **git 子模块**（第三方）——不要直接改里面的文件：需要的修改写成 `patches/pio_usb/` 下的补丁，由 `scripts/apply-patches.sh` 应用（上游合并后删除补丁并把子模块升到含修复的提交）。
+- `lib/Pico-PIO-USB/` 是 **git 子模块**（第三方）——不要直接改里面的文件：需要的修改写成 `patches/pio_usb/` 下的补丁，由 `scripts/apply-patches.sh` 应用（上游合并后删除补丁并把子模块升到含修复的提交）。
 - `lib/hidkit/` 与 `lib/hidkit-tusb-xinput/` 同样是子模块，但它们是**自有仓库**（RiderLty/hidkit、RiderLty/hidkit-tusb-xinput）——要改就在那两个仓库里改、提交，再把本仓库的子模块指过去（`git -C lib/hidkit fetch && checkout`）。**不要在子模块工作区里留下未提交的修改**，那会让别人 clone 到的固件与你的不一致。
 - hidkit 的语义层要新增事件类型时，优先在 hidkit 侧加（`hidkit_input_*` 新增出口/段前缀），本仓库只加对应的打印分支；不要在本仓库里重写解析逻辑。
 - 行格式变更需同步更新 README「输出格式」表（`tools/uart_monitor.py` 对行内容透明，无格式依赖）。

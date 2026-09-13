@@ -143,24 +143,24 @@ endif()
 # （带 pinout 的 add_port、endpoint_open/transfer/abort、send_setup、
 # close_device、port_reset_start/end、bus_get_line_state 全都有）。
 # ------------------------------------------------------------------
-set(_pio_usb_hdr "${CMAKE_CURRENT_SOURCE_DIR}/lib/pico_pio_usb/src/pio_usb.h")
+set(_pio_usb_hdr "${CMAKE_CURRENT_SOURCE_DIR}/lib/Pico-PIO-USB/src/pio_usb.h")
 if(NOT EXISTS "${_pio_usb_hdr}")
   message(FATAL_ERROR
-    "lib/pico_pio_usb 子模块未初始化。\n"
+    "lib/Pico-PIO-USB 子模块未初始化。\n"
     "  请执行：git submodule update --init --recursive   （或用 ./build.sh）")
 endif()
 file(READ "${_pio_usb_hdr}" _pio_usb_hdr_txt)
 string(FIND "${_pio_usb_hdr_txt}" "pio_usb_host_task" _pio_legacy_pos)
 if(_pio_legacy_pos EQUAL -1)
   message(FATAL_ERROR
-    "lib/pico_pio_usb 不是旧血脉（0.6.0 之前）的版本，Hub 下设备拔出检测会失效。\n"
-    "  本仓库固定 9510f79：git -C lib/pico_pio_usb checkout 9510f79 && git add lib/pico_pio_usb\n"
+    "lib/Pico-PIO-USB 不是旧血脉（0.6.0 之前）的版本，hub 下设备拔出检测会失效。\n"
+    "  本仓库固定 9510f79：git -C lib/Pico-PIO-USB checkout 9510f79 && git add lib/Pico-PIO-USB\n"
     "  背景见 README「PIO-USB 版本」与 patches/pio_usb/README.md")
 endif()
 
 # 子模块当前提交 → [BOOT] 行自证版本（排查时先核对，避免"刷错固件"）
 execute_process(
-  COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}/lib/pico_pio_usb" rev-parse --short HEAD
+  COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}/lib/Pico-PIO-USB" rev-parse --short HEAD
   OUTPUT_VARIABLE PIO_USB_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
 if(NOT PIO_USB_COMMIT)
   set(PIO_USB_COMMIT "unknown")
@@ -169,11 +169,20 @@ message(STATUS "PIO-USB: old lineage (0.6.0-pre) tip ${PIO_USB_COMMIT}")
 
 # 补丁是否在位（旧血脉没有 SDK 2 兼容，缺了会以 pio_sm_set_jmp_pin 重定义报错，
 # 这里提前给出可执行的提示；构建走 ./build.sh 时该补丁会自动应用）
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/lib/pico_pio_usb/src/usb_rx.pio" _pio_rx_txt)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/lib/Pico-PIO-USB/src/usb_rx.pio" _pio_rx_txt)
 string(FIND "${_pio_rx_txt}" "PICO_SDK_VERSION_MAJOR" _pio_sdk2_pos)
 if(_pio_sdk2_pos EQUAL -1)
   message(FATAL_ERROR
-    "lib/pico_pio_usb 缺少 SDK 2 构建兼容补丁（旧血脉从未拿到该修复）。\n"
+    "lib/Pico-PIO-USB 缺少 SDK 2 构建兼容补丁（旧血脉从未拿到该修复）。\n"
+    "  请执行：./scripts/apply-patches.sh  然后重新 configure（或用 ./build.sh）")
+endif()
+
+# 总线静默自愈补丁是否在位（缺了的话长冻结后 USB 设备会永久失联）
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/lib/Pico-PIO-USB/src/pio_usb_host.c" _pio_host_txt)
+string(FIND "${_pio_host_txt}" "pio_usb_host_stall_pending" _pio_stall_pos)
+if(_pio_stall_pos EQUAL -1)
+  message(FATAL_ERROR
+    "lib/Pico-PIO-USB 缺少总线静默自愈补丁（长冻结后设备会永久失联，拔插也无效）。\n"
     "  请执行：./scripts/apply-patches.sh  然后重新 configure（或用 ./build.sh）")
 endif()
 
@@ -205,5 +214,5 @@ set(HIDKIT_LIB_DEBUG 1 CACHE STRING "hidkit 库内诊断输出（HIDKIT_DEBUG）
 add_subdirectory(lib/hidkit)
 add_subdirectory(lib/hidkit-tusb-xinput)
 
-add_subdirectory(lib/pico_pio_usb)
+add_subdirectory(lib/Pico-PIO-USB)
 add_subdirectory(src)

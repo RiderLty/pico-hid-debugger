@@ -1,5 +1,5 @@
-[submodule "lib/pico_pio_usb"]
-	path = lib/pico_pio_usb
+[submodule "lib/Pico-PIO-USB"]
+	path = lib/Pico-PIO-USB
 	url = https://github.com/sekigon-gonnoc/Pico-PIO-USB.git
 	# 上游未合并的修复以 patches/ 形式在初始化后打到子模块工作区，
 	# ignore=dirty 让父仓库 git status 不因这些补丁显示 "modified content"。

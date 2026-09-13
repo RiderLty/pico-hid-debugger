@@ -2,7 +2,7 @@
 
 ## 当前安排（2026-09）
 
-子模块 `lib/pico_pio_usb` **固定在旧血脉（0.6.0 重写之前）的顶端提交**：
+子模块 `lib/Pico-PIO-USB` **固定在旧血脉（0.6.0 重写之前）的顶端提交**：
 
 ```
 9510f79  "Apply pin order settings to each port"   2024-06-02

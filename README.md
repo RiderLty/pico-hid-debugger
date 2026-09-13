@@ -194,7 +194,7 @@ cd pico-hid-debugger
 
 `build.sh` 会顺带完成两件初始化工作（幂等，可反复执行），因此 `git clone` 后无需任何手工配置：
 
-1. `git submodule update --init --recursive` —— 拉取三个子模块：`lib/pico_pio_usb`（PIO-USB 库，固定在**旧血脉顶端 `9510f79`**，0.6.0 重写之前，含 hub 拔出修复；本仓库放弃低速支持，见下）、`lib/hidkit`（解析核心）与 `lib/hidkit-tusb-xinput`（XInput 适配器）；
+1. `git submodule update --init --recursive` —— 拉取三个子模块：`lib/Pico-PIO-USB`（PIO-USB 库，固定在**旧血脉顶端 `9510f79`**，0.6.0 重写之前，含 hub 拔出修复；本仓库放弃低速支持，见下）、`lib/hidkit`（解析核心）与 `lib/hidkit-tusb-xinput`（XInput 适配器）；
 2. `./scripts/apply-patches.sh` —— 给 PIO-USB 子模块打上补丁（两枚：SDK 2 构建兼容、device SE0 超时，见下）。
 
 或手动构建（需要 PICO_SDK_PATH、ARM 交叉编译器、CMake >= 3.13）：
@@ -210,7 +210,7 @@ cmake ..
 make -j$(nproc)
 ```
 
-> **关于 PIO-USB 版本（重要）**：本仓库把 `lib/pico_pio_usb` **固定在旧血脉（0.6.0 重写之前）的顶端提交 `9510f79`**，并**放弃低速（LS）设备支持**——因为上游 0.6.0 的重写在带来"低速经 hub 可用"的同时，破坏了"hub 上设备拔出"的处理（上游 issue [#149](https://github.com/sekigon-gonnoc/Pico-PIO-USB/issues/149)、[TinyUSB #2971](https://github.com/hathach/tinyusb/issues/2971) 报告人 bisect 出的正是那对提交）。`9510f79` 只比 0.5.3 发布版多 4 个提交，且**包含上游 `0f747aa` "retired all transferring endpoint if device is disconnected"** —— 即上游自己认定的"最后一个能正确处理 hub 拔出的提交"。
+> **关于 PIO-USB 版本（重要）**：本仓库把 `lib/Pico-PIO-USB` **固定在旧血脉（0.6.0 重写之前）的顶端提交 `9510f79`**，并**放弃低速（LS）设备支持**——因为上游 0.6.0 的重写在带来"低速经 hub 可用"的同时，破坏了"hub 上设备拔出"的处理（上游 issue [#149](https://github.com/sekigon-gonnoc/Pico-PIO-USB/issues/149)、[TinyUSB #2971](https://github.com/hathach/tinyusb/issues/2971) 报告人 bisect 出的正是那对提交）。`9510f79` 只比 0.5.3 发布版多 4 个提交，且**包含上游 `0f747aa` "retired all transferring endpoint if device is disconnected"** —— 即上游自己认定的"最后一个能正确处理 hub 拔出的提交"。
 > 为什么不是简单回退：旧血脉**从未**拿到 Pico SDK 2 的构建兼容（那两笔修复都在重写之后），因此有**一枚** `patches/pio_usb/0001-sdk2-compat.patch`（纯构建兼容，无语义改动，由 `./scripts/apply-patches.sh` 幂等应用；`git submodule update --checkout` 清掉后重跑即可，cmake 配置期也会检测并提示）。针对新血脉写的 9 枚补丁与整轮调查结论**已归档**在 [`patches/pio_usb_archive_0.6plus/`](patches/pio_usb_archive_0.6plus/)，全部说明见 [`patches/pio_usb/README.md`](patches/pio_usb/README.md)。
 >
 > **另一处补丁**（与上面无关，继续保留）：**SDK 捆绑的 TinyUSB 0.18.0**（`src/host/hub.c`）在 hub 端口变化流程里，任何一次传输失败就**永久放弃**（`hub_xfer_cb` 用 `TU_VERIFY` 提前返回 → 状态轮询不再入队；五处完成回调 `TU_ASSERT` 直接断言停摆），而 pio-usb 这类 HCD 出现事务级错误是常态。上游已在 **TinyUSB PR #2994**（0.19.0 起）改为失败即重新入队轮询。该补丁在 **configure 期自动**生成 `hub.c` 修正副本到 build 目录并替换源列表（与既有的 `hid_host.c` 三级日志补丁同一手法），**SDK 文件始终原样**；SDK 内 TinyUSB 升到 ≥ 0.19.0 后自动失效，无需手工步骤。
@@ -226,7 +226,7 @@ make -j$(nproc)
 把 `lib/hidkit` 与 `lib/hidkit-tusb-xinput` 跟到**远端 `main`**，再构建。三条要记住的：
 
 - **跟的是远端，不是你的本地仓库。** 在 `~/hidkit` 里改了但**没 push** 的提交，这个参数带不进来（脚本会这么提示你）。要同步本地改动，先 push。
-- **不动 `lib/pico_pio_usb`。** 那个子模块是**故意钉死**在旧血脉 `9510f79` 的（0.6.0 重写会破坏 hub 上设备拔出，见「[关于 PIO-USB 版本](#构建)」），跟远端走等于把它升坏 —— 脚本逐个点名子模块，不用全量 `--remote`。
+- **不动 `lib/Pico-PIO-USB`。** 那个子模块是**故意钉死**在旧血脉 `9510f79` 的（0.6.0 重写会破坏 hub 上设备拔出，见「[关于 PIO-USB 版本](#构建)」），跟远端走等于把它升坏 —— 脚本逐个点名子模块，不用全量 `--remote`。
 - **它只切子模块工作区，父仓库还没记录。** 构建完记得落成一次提交，否则下次 `git submodule update` 会把指针退回原处：
 
   ```bash
@@ -294,7 +294,7 @@ tools/
 index.html                # Web Serial 日志查看器（xterm.js + WebGL，[TUSB] 过滤）
 vendor/                   # xterm.js 及 WebGL/Fit 插件（第三方，vendored）
 lib/
-├── pico_pio_usb/         # PIO-USB 库（git 子模块，锁定旧血脉顶端 9510f79；放弃低速支持）
+├── Pico-PIO-USB/         # PIO-USB 库（git 子模块，锁定旧血脉顶端 9510f79；放弃低速支持）
 ├── hidkit/               # HID/XInput 解析核心（git 子模块，独立开源项目）
 └── hidkit-tusb-xinput/   # XInput 类驱动 + 归一化接线（git 子模块，独立开源项目）
 patches/

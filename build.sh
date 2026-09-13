@@ -68,7 +68,7 @@ export PICO_SDK_PATH
 #   3) 有 upstream → git push（HIDKIT_NO_PUSH=1 时只提交不推送）
 # 这样"更新 + 构建"不会被构建期的 git submodule update 复位回旧指针。
 #
-# **不含 lib/pico_pio_usb**：那个是故意钉死在旧血脉 9510f79 的（0.6.0 重写会
+# **不含 lib/Pico-PIO-USB**：那个是故意钉死在旧血脉 9510f79 的（0.6.0 重写会
 # 破坏 hub 上设备拔出，见 README「PIO-USB 版本」），跟远端走等于把它升坏。
 # 所以这里逐个点名子模块，不用 --remote 的全量形式。
 update_hidkit() {
@@ -158,7 +158,7 @@ $sub: $old -> $new"
         fi
     fi
 
-    echo "   未改动 lib/pico_pio_usb（故意钉死，见 README「PIO-USB 版本」）"
+    echo "   未改动 lib/Pico-PIO-USB（故意钉死，见 README「PIO-USB 版本」）"
 }
 
 if [ "$UPDATE_HIDKIT" = 1 ]; then

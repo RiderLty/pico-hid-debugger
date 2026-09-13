@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 给 lib/pico_pio_usb 子模块打补丁（幂等）。
+# 给 lib/Pico-PIO-USB 子模块打补丁（幂等）。
 #
 # 当前三枚补丁（见 patches/pio_usb/README.md）：
 #   0001-sdk2-compat         旧血脉缺的 Pico SDK 2 构建兼容（纯构建，无语义改动）
@@ -17,7 +17,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SUB_REL="lib/pico_pio_usb"
+SUB_REL="lib/Pico-PIO-USB"
 SUB="$ROOT/$SUB_REL"
 PATCH_DIR="$ROOT/patches/pio_usb"
 # 补丁基线：子模块锁定提交（patches/pio_usb/*.patch 以此为 context）
