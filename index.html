@@ -120,6 +120,14 @@
   </div>
   <button id="btnExport" title="导出当前过滤视图为 .log 文件">导出 .log</button>
   <button id="btnClear" title="清空当前日志显示与内存缓冲">清空日志</button>
+  <!-- 本机视图偏好（与固件输出开关无关，绝不下发、不进掩码）：勾上后收到 [BOOT]
+       行即清空上一轮日志。借用 .swgroup 只为外观一致 —— 它没有 id="swgroup"，
+       所以不会进入固件掩码的勾选框集合（选择器是 #swgroup input[data-sw]） -->
+  <span class="swgroup" id="clrbootgroup"
+        title="本机视图偏好，不下发给固件：勾上后一旦收到 [BOOT] 行（固件重启/复位）就先清空上一轮日志，串口不断开也能从本次启动重新看。选择记忆在本机">
+    <span class="lbl">日志</span>
+    <label title="收到 [BOOT] 行（固件重启/复位）时清空上一轮日志"><input type="checkbox" id="clrBoot">重启清空</label>
+  </span>
   <span id="count">0 行</span>
 </header>
 <div id="hint" style="display:none"></div>
@@ -137,6 +145,7 @@ const MAX_LINES = 50000;        // 内存模型与 xterm 回滚上限
 const KEY_PORT = 'pico-hid-debugger.portKey';
 const KEY_BAUD = 'pico-hid-debugger.baud';
 const KEY_SW = 'pico-hid-debugger.switch';
+const KEY_CLR_BOOT = 'pico-hid-debugger.clearOnBoot';   // 本机视图偏好：固件重启时清空日志
 // 固件输出开关的位表，**须与固件 src/log_switch.h 一致**：
 // bit0 HIDKIT / bit1 HKDBG / bit2 TUSB / bit3 HID / bit4 INFO，bit5-7 保留。
 // 默认 0x13 = 语义层 + 挂载信息（[TUSB]/[HID] 要显式打开）
@@ -145,6 +154,7 @@ const SW_DEFAULT = 0x13, SW_MASK = 0x1F;
 const $ = id => document.getElementById(id);
 const termEl = $('term'), statusEl = $('status'), countEl = $('count');
 const btnConnect = $('btnConnect'), btnPick = $('btnPick'), btnClear = $('btnClear');
+const clrBootBox = $('clrBoot');       // 「重启清空」勾选框（本机偏好，不进固件掩码）
 const btnExport = $('btnExport'), baudSel = $('baud');
 const chip = $('bottomChip'), hintEl = $('hint');
 
@@ -156,6 +166,9 @@ let wantConnected = false;      // 是否期望保持连接（手动断开后关
 let baud = 2000000;
 let currentReader = null;
 let lineBuf = '';               // 跨 read() 的半行缓冲
+// 收到 [BOOT] 行（固件重启/复位）时是否清空上一轮日志。本机视图偏好，与固件
+// 开关无关，默认开 —— 设备真的重启才会打 [BOOT]，清掉旧会话正是想要的行为
+let clearOnBoot = (localStorage.getItem(KEY_CLR_BOOT) ?? '1') === '1';
 let allLines = [];              // 全量模型：[{cls, text}]，导出与过滤切换的数据源
 let viewLines = [];             // 当前过滤视图
 let pending = [];               // 待 rAF 批量写入 xterm 的 ANSI 行
@@ -300,7 +313,12 @@ function scheduleFlush() {
 function appendLine(text) {
   // 固件重启的标志行（刷固件 / 复位）：串口没断就不会触发自动重连，固件却已
   // 回到默认开关值 —— 这里补一次下发，把记忆的开关重新压回去
-  if (text.startsWith('[BOOT]')) sendSwitch();
+  if (text.startsWith('[BOOT]')) {
+    // 勾了「重启清空」就先把上一轮清掉，让本次启动从 [BOOT] 行重新开始。
+    // 必须在下面 push 之前清，否则这一行自己也会被清掉
+    if (clearOnBoot) clearLog();
+    sendSwitch();
+  }
 
   const { cls, bit } = tagInfo(text);
   allLines.push({ cls, bit, text });                 // allLines 恒为全量
@@ -649,9 +667,21 @@ setInterval(async () => {
 }, 100);
 
 // ---------------------------------------------------------------- 交互
-btnClear.addEventListener('click', () => {
-  allLines = []; viewLines = []; lineBuf = '';
+// 清空日志：内存模型、待写队列、半行缓冲与终端一起复位。
+// 「清空日志」按钮与「重启清空」（收到 [BOOT] 时）共用这一条路径，避免两处逻辑漂移；
+// pending 也要清 —— 它可能还压着上一轮已入队但还没写进 xterm 的行
+function clearLog() {
+  allLines = []; viewLines = []; pending = []; lineBuf = '';
   rebuildTerm([]);
+}
+
+btnClear.addEventListener('click', clearLog);
+
+// 「重启清空」：本机视图偏好，只写 localStorage，不参与固件掩码
+clrBootBox.checked = clearOnBoot;
+clrBootBox.addEventListener('change', () => {
+  clearOnBoot = clrBootBox.checked;
+  localStorage.setItem(KEY_CLR_BOOT, clearOnBoot ? '1' : '0');
 });
 
 // 导出当前过滤视图为 .log（\r\n 行尾，与固件输出一致），文件名带时间戳
