@@ -27,7 +27,7 @@
 // pico-hid-debugger：USB HID 设备调试器固件。
 // PIO-USB Host（GPIO12/13）枚举插入的 HID 设备：挂载时 dump 描述符与
 // 基本信息，运行时把原始报文按行 hexdump，全部经 UART0（GPIO2/3，
-// 2Mbaud）输出。原生 USB Device 栈禁用（CFG_TUD_ENABLED=0），Pico
+// 4Mbaud）输出。原生 USB Device 栈禁用（CFG_TUD_ENABLED=0），Pico
 // 在上位机上不再是任何 USB 设备，仅作为独立的调试采集器。
 // TinyUSB 中 roothub port0 是原生 USB 控制器（不初始化），port1 是 pico-pio-usb
 // （GPIO12/13 板载母座），port2 是第二 PIO host 口（GPIO8/9，tuh_init 后 add_port）。
@@ -141,8 +141,18 @@ void core1_main() {
 // core0: UART 输出
 int main(void) {
   // 默认 150MHz 不合适，系统时钟必须是 12MHz 的整数倍（PIO-USB 时序依赖）。
-  // 240MHz：UART 2Mbaud 分频仍为整数（120），PIO-USB 的 USB 事务时序裕量更大
+  // 240MHz：UART 4Mbaud 分频仍为整数（IBRD=3, FBRD=48），PIO-USB 时序裕量更大
   set_sys_clock_khz(240000, true);
+
+  // 关键：set_sys_clock_khz() 重配 PLL 后默认把 clk_peri 切到 48MHz USB PLL
+  // （PICO_CLOCK_ADJUST_PERI_CLOCK_WITH_SYS_CLOCK=0，SDK clocks.c），而 UART
+  // 的时钟源正是 clk_peri —— 不挂回 clk_sys，UART 最高只能到 48M/16=3M，
+  // 4Mbaud 请求会被 uart_set_baudrate() 静默回退（分频下限 IBRD=1 强制）。
+  // 显式把 clk_peri 重新挂回 clk_sys（240MHz），恢复"分频按系统时钟算"
+  clock_configure_undivided(clk_peri,
+                            0,
+                            CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLK_SYS,
+                            clock_get_hz(clk_sys));
 
   // 初始化 UART0 与跨核队列、临界区。必须先于 core1 启动：
   // 生产者随时可能入队，串口与自旋锁必须先就绪
@@ -166,7 +176,7 @@ int main(void) {
   multicore_launch_core1(core1_main);
 
   while (true) {
-    // 先收指令再出队：flush 一轮预算在 2Mbaud 下最长可阻塞约 20ms，
+    // 先收指令再出队：flush 一轮预算在 4Mbaud 下最长可阻塞约 10ms（2M 时 20ms），
     // 先 poll 让开关改动最早生效
     log_switch_poll();    // 排空 UART0 RX，应用下行单字节指令
     uart_output_flush();  // 队列批量出队，写 UART0

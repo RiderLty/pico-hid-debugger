@@ -11,17 +11,17 @@
  * 出口有二：队列消费口 uart_output_flush()，与绕过队列的
  * uart_output_write_direct()（core0 自己要输出的行）。core1 绝不写 UART ——
  * 这样从结构上避免双核并发写同一 UART。
- * UART0 固定在 GPIO2(TX)/GPIO3(RX)，2000000bps。
+ * UART0 固定在 GPIO2(TX)/GPIO3(RX)，4000000bps。
  *
  * RX（GPIO3）用于接收上位机下行的单字节日志开关指令，由 core0 的
  * log_switch_poll() 排空；本模块只负责把它上拉并初始化，不解析内容。
  */
 
 // 波特率可经编译定义覆盖（src/CMakeLists.txt 的 UART_BAUD 缓存变量）。
-// 2M @ 240MHz 系统时钟分频恰为整数（零误差），容量 200KB/s，
+// 4M @ 240MHz 系统时钟分频恰为整数（60，零误差），容量 400KB/s，
 // 可承载 1kHz 鼠标全量报文 + 级别 3 日志；须与上位机选择值一致
 #ifndef UARTO_BAUDRATE
-#define UARTO_BAUDRATE 2000000
+#define UARTO_BAUDRATE 4000000
 #endif
 #define UARTO_TX_PIN   2u
 #define UARTO_RX_PIN   3u

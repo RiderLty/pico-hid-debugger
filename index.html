@@ -95,7 +95,8 @@
   <button id="btnConnect" class="primary">连接串口</button>
   <button id="btnPick" title="重新弹出系统串口选择框">选择设备…</button>
   <select id="baud" title="波特率（须与固件一致，重连后生效）">
-    <option value="2000000" selected>2M</option>
+    <option value="4000000" selected>4M</option>
+    <option value="2000000">2M</option>
     <option value="921600">921600</option>
     <option value="1000000">1M</option>
     <option value="3000000">3M</option>
@@ -163,7 +164,7 @@ let portKey = '';               // "vid:pid" 标识，localStorage 记忆
 let running = false;            // 读循环是否活跃
 let opening = false;            // openPort 并发防护（事件与看门狗可能同时触发）
 let wantConnected = false;      // 是否期望保持连接（手动断开后关闭自动重连）
-let baud = 2000000;
+let baud = 4000000;
 let currentReader = null;
 let lineBuf = '';               // 跨 read() 的半行缓冲
 // 收到 [BOOT] 行（固件重启/复位）时是否清空上一轮日志。本机视图偏好，与固件
@@ -724,7 +725,7 @@ window.__debug = { append: appendLine, term: () => term };
   swMask = (Number.isFinite(savedSw) ? savedSw : SW_DEFAULT) & SW_MASK;
   renderSw();
   if (!('serial' in navigator)) return;
-  baud = +(localStorage.getItem(KEY_BAUD) || 2000000);
+  baud = +(localStorage.getItem(KEY_BAUD) || 4000000);
   baudSel.value = String(baud);
   portKey = localStorage.getItem(KEY_PORT) || '';
   // 恢复上次的正则过滤（不重复记忆）

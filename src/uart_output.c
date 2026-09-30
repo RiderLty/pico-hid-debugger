@@ -50,7 +50,7 @@ void uart_output_init(void)
 
     // RX 上拉：uart_init() 会置 RXE，但 gpio_set_function() 只开输入缓冲、
     // **不动上下拉**，而 RP2350 的 pad 复位是 PUE=PDE=0 —— 也就是说在
-    // USB-UART 适配器接上并打开之前，GPIO3 是**悬空**的。悬空输入在 2Mbaud
+    // USB-UART 适配器接上并打开之前，GPIO3 是**悬空**的。悬空输入在 Mbaud 级波特率
     // 下会产生随机起始位，每个随机字节都会被当成一发下行指令（见
     // log_switch.c），后果是日志被凑出来的掩码静默关掉。
     // 上拉让空闲线保持高电平，从根上消掉这类噪声

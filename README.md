@@ -12,14 +12,14 @@ PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显
 
 四类输出（原始 hexdump `[HID]`、语义事件 `[HIDKIT]`、库内诊断 `[HKDBG]`、栈日志 `[TUSB]`）**各有独立的运行期开关**，由上位机经串口下发一个字节控制，立即生效、不需要重编译。**固件上电默认全开**（"失败要响"：裸串口、`screen` 这类没有下发手段的观察者永远不会遇到某个类别静默消失）；`index.html` 的记忆偏好默认是安静的 `0x13`，连上即下发，所以用它的人默认只看到语义层与挂载信息。
 
-原生 USB Device 栈已完全禁用——Pico 在上位机上不再枚举为任何 USB 设备，避免 Host/Device 角色混淆；调试信息经硬件 UART（GPIO 2 TX / GPIO 3 RX，2000000bps）输出，同一个口的 RX 用于接收上位机下行的开关指令。
+原生 USB Device 栈已完全禁用——Pico 在上位机上不再枚举为任何 USB 设备，避免 Host/Device 角色混淆；调试信息经硬件 UART（GPIO 2 TX / GPIO 3 RX，4000000bps）输出，同一个口的 RX 用于接收上位机下行的开关指令。
 
 ## 硬件
 
 | 接口 | 引脚 | 用途 |
 |------|------|------|
 | PIO-USB | GPIO 12 (D+) / GPIO 13 (D-) | 连接被调试的 USB 设备/Hub |
-| UART0 | GPIO 2 (TX) / GPIO 3 (RX) | 调试输出，2000000 8N1；RX 兼收上位机下行的单字节开关指令 |
+| UART0 | GPIO 2 (TX) / GPIO 3 (RX) | 调试输出，4000000 8N1；RX 兼收上位机下行的单字节开关指令 |
 
 注意：RP2350 上 GPIO2/3 的 UART 功能在 FUNCSEL 11（`GPIO_FUNC_UART_AUX`），接线时 TX/RX 交叉连接 USB-UART 适配器。
 
@@ -32,7 +32,7 @@ PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显
 
 | 行格式 | 含义 |
 |--------|------|
-| `[BOOT]  system init: pico-hid-debugger uart=2000000 8N1 tusb=0.18.0 hubpatch=1 piousb=9510f79 hkdbg=1 hkevt=1 sw=0x13` | 启动标记（开机第一条输出，先于任何 TinyUSB 日志；见到它即知本连接从系统启动起完整抓取）。`tusb=` 是实际链接的 TinyUSB 版本，`hubpatch=` 表示 hub 驱动韧性补丁是否生效，**`piousb=` 是 PIO-USB 子模块当前提交**——排查前先核对这三个值，避免"日志看着一样、其实刷的是上一版固件"。`hkdbg=`/`hkevt=` 是 hidkit 语义层的两个**编译期**开关（库内诊断 / 事件行）：**"为什么没有 `[HIDKIT]` 行"先看这两个值**，与"刷错固件"是同一类误判。**`sw=` 是运行期开关的上电默认掩码**（收到任何下行指令之前的值）——实际生效值以 `[CTRL]` 行为准，上位机连上就会把记忆的值压下来 |
+| `[BOOT]  system init: pico-hid-debugger uart=4000000 8N1 tusb=0.18.0 hubpatch=1 piousb=9510f79 hkdbg=1 hkevt=1 sw=0x13` | 启动标记（开机第一条输出，先于任何 TinyUSB 日志；见到它即知本连接从系统启动起完整抓取）。`tusb=` 是实际链接的 TinyUSB 版本，`hubpatch=` 表示 hub 驱动韧性补丁是否生效，**`piousb=` 是 PIO-USB 子模块当前提交**——排查前先核对这三个值，避免"日志看着一样、其实刷的是上一版固件"。`hkdbg=`/`hkevt=` 是 hidkit 语义层的两个**编译期**开关（库内诊断 / 事件行）：**"为什么没有 `[HIDKIT]` 行"先看这两个值**，与"刷错固件"是同一类误判。**`sw=` 是运行期开关的上电默认掩码**（收到任何下行指令之前的值）——实际生效值以 `[CTRL]` 行为准，上位机连上就会把记忆的值压下来 |
 | `[CTRL]  sw=0x13 hidkit=1 hkdbg=1 tusb=0 hid=0 info=1` | **运行期开关回执**：收到一个下行字节就回一行，报出应用后的掩码。"我发的字节到了吗""现在到底开着哪些"看这一行。恒开，不受开关自身影响 |
 | `[PIODBG] kind=SETUP ep=00 res=-1 started=0 sync=01 pid=A5 retry=0 att=21111/20/39 seq=31` | **事务失败探针**（诊断用；三类事务各留一份不会被覆盖的样本，每类每 200ms 最多一行）。**判读看 `sync`/`pid`**：`sync=00 pid=00` = 真的什么都没收到（对端无应答）；非 0 但不像合法握手 = 收到了但**锁偏错帧**（把 `sync<<1\|carry` 还原即可，例：`01 A5` 就是 `80 D2` = SYNC+ACK）。`att=IN/OUT/SETUP` 为累计尝试次数 |
 | `[MOUNT] dev=%u vid=%04x pid=%04x` | 设备枚举完成（含 hub 设备自身） |
@@ -100,7 +100,7 @@ PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显
 发一字节即可验证（`0x13` = 只出语义层与挂载信息，`0x1F` = 全开；固件上电即 `0x1F`）：
 
 ```bash
-python3 -c "import serial; serial.Serial('/dev/tty.usbserialXXXX', 2000000).write(bytes([0x1F]))"
+python3 -c "import serial; serial.Serial('/dev/tty.usbserialXXXX', 4000000).write(bytes([0x1F]))"
 ```
 
 固件**每收到一个字节就回一行 `[CTRL]`**（不是"仅变化时"），所以"字节到了没""现在开着哪些"直接看日志即可回答：
@@ -111,7 +111,7 @@ python3 -c "import serial; serial.Serial('/dev/tty.usbserialXXXX', 2000000).writ
 
 几点实现上的取舍：
 
-- **RX 上拉**。`gpio_set_function()` 只开输入缓冲、不动上下拉，而 RP2350 的 pad 复位是浮空的 —— 适配器没接时 GPIO3 悬空，2Mbaud 下会产生随机起始位，每个随机字节都会被当成一发指令（后果是日志被凑出来的掩码静默关掉）。所以固件给 RX 加了上拉，并丢弃带帧/奇偶/断线错误的字节：线路不对时宁可什么都不做。
+- **RX 上拉**。`gpio_set_function()` 只开输入缓冲、不动上下拉，而 RP2350 的 pad 复位是浮空的 —— 适配器没接时 GPIO3 悬空，Mbaud 级波特率下会产生随机起始位，每个随机字节都会被当成一发指令（后果是日志被凑出来的掩码静默关掉）。所以固件给 RX 加了上拉，并丢弃带帧/奇偶/断线错误的字节：线路不对时宁可什么都不做。
 - **直写不经队列**。`[CTRL]` 由 core0 直写 UART（队列是 core1 单向的生产者，core0 入队会破坏 SPSC 单生产者约定）。因此 `[CTRL]` 可能**排在 core1 更早入队的行之前** —— 外观问题，不是丢行。
 - **判定在入口**。一条多片段日志（描述符 dump、`[TUSB]` 的分片行）在开始时是开的就完整输出，不会被中途切换切半。
 - **语义解析不受开关影响**。关掉 `[HID]` 只是不打印原始报文，`[HIDKIT]` 事件照常解析输出 —— 开关管的是"打印什么"，不是"解析什么"。
@@ -215,7 +215,7 @@ make -j$(nproc)
 >
 > **另一处补丁**（与上面无关，继续保留）：**SDK 捆绑的 TinyUSB 0.18.0**（`src/host/hub.c`）在 hub 端口变化流程里，任何一次传输失败就**永久放弃**（`hub_xfer_cb` 用 `TU_VERIFY` 提前返回 → 状态轮询不再入队；五处完成回调 `TU_ASSERT` 直接断言停摆），而 pio-usb 这类 HCD 出现事务级错误是常态。上游已在 **TinyUSB PR #2994**（0.19.0 起）改为失败即重新入队轮询。该补丁在 **configure 期自动**生成 `hub.c` 修正副本到 build 目录并替换源列表（与既有的 `hid_host.c` 三级日志补丁同一手法），**SDK 文件始终原样**；SDK 内 TinyUSB 升到 ≥ 0.19.0 后自动失效，无需手工步骤。
 
-可选：`UART_BAUD=921600 ./build.sh` 覆盖 UART 波特率（默认 2M，须与上位机一致且适配器支持）。
+可选：`UART_BAUD=921600 ./build.sh` 覆盖 UART 波特率（默认 4M，须与上位机一致且适配器支持）。
 
 ### 更新 hidkit 子模块
 
@@ -242,11 +242,11 @@ make -j$(nproc)
 
 ## 测试
 
-1. USB-UART 适配器接 GPIO2(TX)/GPIO3(RX)（交叉接线），打开串口终端，波特率 2000000：
+1. USB-UART 适配器接 GPIO2(TX)/GPIO3(RX)（交叉接线），打开串口终端，波特率 4000000：
 
 ```bash
 ls /dev/tty.usbserial*           # macOS
-screen /dev/tty.usbserialXXXX 2000000
+screen /dev/tty.usbserialXXXX 4000000
 ```
 
 2. 被调试设备接 PIO-USB 端口（GPIO12/13，需外部 5V 供电与 D+ 1.5kΩ 上拉，或经 Hub）。插入后立即输出挂载信息与描述符 dump，随后每次报文一行。
@@ -256,7 +256,7 @@ screen /dev/tty.usbserialXXXX 2000000
 ```bash
 pip install pyserial                       # 首次使用装依赖
 python3 tools/uart_monitor.py              # 自动探测串口并连接
-python3 tools/uart_monitor.py -p /dev/tty.usbserialXXXX -b 2000000  # 指定串口
+python3 tools/uart_monitor.py -p /dev/tty.usbserialXXXX -b 4000000  # 指定串口
 ```
 
 运行中单键：`f` = 冻结/恢复滚动、`c` = 清屏、`q` = 退出。
@@ -284,7 +284,7 @@ src/
 ├── hid_host_app.c/.h     # 信息采集：TinyUSB 回调、描述符抓取状态机、报文 hexdump
 ├── hidkit_app.c/.h       # 语义层接线：hidkit 出口函数 → [HIDKIT]/[HKDBG] 行；XInput 类驱动注册
 ├── key_names.c/.h        # 按键 code → 名称词表（[HIDKIT] key 行的 name= 字段）
-├── uart_output.c/.h      # 跨核 SPSC 队列 → UART0（GPIO2/3，2000000）+ core0 直写出口
+├── uart_output.c/.h      # 跨核 SPSC 队列 → UART0（GPIO2/3，4000000）+ core0 直写出口
 ├── log_switch.c/.h       # 运行期输出开关：UART 下行单字节 → 位掩码，[CTRL] 回执
 ├── tusb_log.c/.h         # TinyUSB 内部日志桥接：tu_printf 钩子 → [TUSB] 行
 ├── tusb_config.h         # TinyUSB 配置（仅 Host 栈 + 调试日志级别）
@@ -305,7 +305,7 @@ scripts/
 
 ## 已知限制
 
-1. UART 无流控：2Mbaud 容量约 200KB/s。**四类输出全开时**，1kHz 鼠标（报文行 66B + 级别 3 的每报文 TUSB 日志约 40B ≈ 106KB/s）约占 53%；再叠上 `[HIDKIT]` 事件行（约 40B/报文）会到 ~140KB/s。此前 921600（92KB/s）即因此溢出丢行。现在不必动编译选项：**运行期开关**（见「[运行期输出开关](#运行期输出开关)」）就能按需关掉 `[TUSB]`/`[HID]`，而 `index.html` 默认就是这么关着的（只出语义层与挂载信息，带宽压力主要是 `[HIDKIT]`）。再要高流量可用 `cmake -DUART_BAUD=` 提速（RP2350 UART 可跑 5Mbps+）。队列满即丢行并计数，排空后以 `[DROP]` 补报。
+1. UART 无流控：4Mbaud 容量约 400KB/s（240MHz 下分频恰为整数，零波特率误差）。**四类输出全开时**，1kHz 鼠标（报文行 66B + 级别 3 的每报文 TUSB 日志约 40B ≈ 106KB/s）约占 27%；再叠上 `[HIDKIT]` 事件行（约 40B/报文）约 140KB/s（35%）。此前 2Mbaud（200KB/s）下全开约占 53% ~ 70%，921600（92KB/s）即因此溢出丢行。现在不必动编译选项：**运行期开关**（见「[运行期输出开关](#运行期输出开关)」）就能按需关掉 `[TUSB]`/`[HID]`，而 `index.html` 默认就是这么关着的（只出语义层与挂载信息，带宽压力主要是 `[HIDKIT]`）。带宽不足时可用 `cmake -DUART_BAUD=` 提速（RP2350 UART 可跑 5Mbps+）。队列满即丢行并计数，排空后以 `[DROP]` 补报。
 2. 报告描述符超过 TinyUSB 枚举缓冲（512 字节）时显示 `[RPTDS] not captured`（此时 hidkit 也拿不到描述符：`[HKDBG]` 会给出 `unhandled ... desc=none`）。
 3. 多配置设备只转储配置 1。
 4. 字符串描述符按 UTF-16LE 低字节转可打印 ASCII，非 ASCII 字符显示 `?`。

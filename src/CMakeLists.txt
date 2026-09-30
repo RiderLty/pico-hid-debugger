@@ -1,7 +1,7 @@
 set(target_name pico-hid-debugger)
 add_executable(${target_name})
 
-# UART0 波特率可编译期覆盖（默认 2000000，见 uart_output.h；
+# UART0 波特率可编译期覆盖（默认 4000000，见 uart_output.h；
 # 须与上位机选择一致且 USB-UART 适配器支持）
 set(UART_BAUD "" CACHE STRING "UART0 baudrate override, e.g. 921600")
 

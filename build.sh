@@ -6,7 +6,7 @@
 #   ./build.sh --update-hidkit                  # 跟最新 + 提交/推送子模块指针，再构建
 #   ./build.sh --update-hidkit-only             # 只做子模块更新（+提交/推送），不编译
 #   PICO_SDK_PATH=/path/to/pico-sdk ./build.sh  # 显式指定 SDK 路径
-#   UART_BAUD=921600 ./build.sh                 # 可选：覆盖 UART 波特率（默认 2M）
+#   UART_BAUD=921600 ./build.sh                 # 可选：覆盖 UART 波特率（默认 4M）
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -29,7 +29,7 @@ for arg in "$@"; do
 
 环境变量：
   PICO_SDK_PATH=<路径>   SDK 位置（默认探测 ../pico-sdk 与 ~/pico-sdk）
-  UART_BAUD=<波特率>     覆盖固件默认 2000000（须与上位机一致）
+  UART_BAUD=<波特率>     覆盖固件默认 4000000（须与上位机一致）
   HIDKIT_NO_PUSH=1       更新时只提交指针、不 push（离线/手动推送时用）
 USAGE
             exit 0
