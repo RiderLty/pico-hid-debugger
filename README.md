@@ -44,6 +44,7 @@ PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显
 | `[STRDS] dev=%u Mfg(1)="..." / Prod(2)="..." / Ser(3)="..."` | 字符串描述符（UTF-16 转可打印 ASCII） |
 | `[HIDMT] dev=%u vid=%04x pid=%04x itf=%u proto=%s cls=%02x sub=%02x eps=%u` | HID 接口挂载（proto: None/Keyboard/Mouse） |
 | `[RPTDS] dev=%u itf=%u len=%u off=..: <hex>` | HID 报告描述符原始转储 |
+| `[SWPRO] dev=%u itf=%u pid=%04x handshake start` / `[SWPRO] dev=%u send=%s len=%u` | Switch Pro 握手进度（`057e:2009/2006/2007` 需主机握手才开始上报；握手报文经中断 OUT 发出，设备应答 `0x81`/`0x21` 会作为输入报文出现在 `[HID]`，完成后开始 0x30 报文流） |
 | `[HID]   dev=%u itf=%u len=%u off=%u: <hex>` | **原始报文**（超 16 字节折行，`off=` 递增标注行内偏移）。受运行期开关控制，见「[运行期输出开关](#运行期输出开关)」 |
 | `[HIDKIT] key slot=%d code=0x%04X name=%s down\|up` | **语义事件**（键/鼠标按键/手柄按键统一出口，`code` 的段前缀区分类型：`0x00xx` 键盘 HID Usage ID、`0x01xx` 鼠标按键序号、`0x02xx` 手柄 `BTN_*`）。`name=` 是 `code` 对应的按键名（`src/key_names.c` 的词表，命名与 hidkit 的宏一致：`KEY_A` / `MOUSE_BUTTON_LEFT` / `BTN_DPAD_UP`，可直接回 grep `hidkit_codes.h`；词表外的 code 显示 `?`）—— **只加可读视图，`code` 原值照旧**。**仅在状态变化时**输出；`[HID]` 行也开着时紧跟触发它的那一行之后（上位机默认视图里 `[HID]` 是关的，所以通常看不到那行） |
 | `[HIDKIT] mouse slot=%d dx=%d dy=%d wheel=%d` | 鼠标位移与滚轮（仅非零时输出） |
@@ -88,7 +89,7 @@ PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显
 | bit1 | `[HKDBG]` 库内诊断行 | **1** |
 | bit2 | `[TUSB]` TinyUSB 栈日志 | 0 |
 | bit3 | `[HID]` 原始报文 hexdump | 0 |
-| bit4 | 挂载与描述符 dump：`[MOUNT]` `[DEVDS]` `[CFGDS]` `[STRDS]` `[HIDMT]` `[RPTDS]` `[UNHID]` `[DEVRM]` | **1** |
+| bit4 | 挂载与描述符 dump：`[MOUNT]` `[DEVDS]` `[CFGDS]` `[STRDS]` `[HIDMT]` `[RPTDS]` `[UNHID]` `[DEVRM]` `[SWPRO]` | **1** |
 | bit5-7 | 保留（下发时被忽略） | — |
 
 **固件的上电默认是 `0x1F`（全开）**（`LOG_SW_DEFAULT`，在 `src/log_switch.h`）—— 刻意取"失败要响"：固件没法知道上位机想要什么，而裸串口 / `screen` / `tools/uart_monitor.py` 这些观察者**根本没有下发掩码的手段**，默认全开意味着它们永远不会遇到"某个类别静默消失"。

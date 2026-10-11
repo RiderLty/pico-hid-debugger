@@ -17,6 +17,7 @@
 #include "log_switch.h"
 #include "hid_host_app.h"
 #include "hidkit_app.h"
+#include "switch_pro.h"
 
 //--------------------------------------------------------------------+
 // 行输出
@@ -362,6 +363,11 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
     hidkit_app_mount(dev_addr, instance, itf_num, itf_protocol,
                      desc_report, desc_len);
 
+    // Switch Pro 等任天堂手柄需要主机握手才会开始上报（模块内部自判
+    // vid/pid，非目标设备直接返回）；订阅已在下方启动，握手应答报文
+    // 会照常走 tuh_hid_report_received_cb 进 [HID] hexdump
+    switch_pro_maybe_mount(dev_addr, instance, vid, pid);
+
     if (!tuh_hid_receive_report(dev_addr, instance)) {
         hid_app_emit("[ERROR] dev=%u cannot request report", dev_addr);
     }
@@ -372,6 +378,8 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance)
 {
     uint8_t itf_num = (instance < CFG_TUH_HID) ? s_itf_num[instance] : 0;
     hid_app_emit_info("[UNHID] dev=%u itf=%u", dev_addr, itf_num);
+    // 清握手状态机槽位（若该设备在跑/已跑完握手）
+    switch_pro_umount(dev_addr);
     // 释放 hidkit 槽位：库内先按布局表补发"全部抬起"（按键不会残留"按着"）
     hidkit_app_umount(instance);
     if (instance < CFG_TUH_HID) s_itf_num[instance] = 0;

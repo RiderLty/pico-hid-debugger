@@ -50,6 +50,7 @@
 #include "tusb_log.h"
 #include "hidkit.h"        /* 自证行里的 HIDKIT_DEBUG / 容量宏 */
 #include "hidkit_app.h"
+#include "switch_pro.h"
 
 // 字符串化宏：启动标记里显示编译期确定的波特率
 #define PICO_STR2(x) #x
@@ -134,7 +135,8 @@ void core1_main() {
   pio_usb_host_add_port(8, PIO_USB_PINOUT_DPDM);
 
   while (true) {
-    tuh_task(); // TinyUSB Host 任务循环
+    tuh_task();          // TinyUSB Host 任务循环
+    switch_pro_task();   // Switch Pro 握手状态机（非阻塞，时间步进）
   }
 }
 
