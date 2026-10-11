@@ -394,6 +394,9 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance,
         // 但下面的语义转发**不受开关影响**：两个开关管的是"打印什么"，
         // 不是"解析什么"。关掉 [HID] 行，[HIDKIT] 事件照出
         hexdump(LOG_SW_HID, "HID", dev_addr, (int)s_itf_num[instance], report, len);
+        // Switch Pro 校准读回（0x21）先喂握手模块 —— 它按地址核对消费，
+        // hidkit 那边见到 0x21 只会静默吞掉
+        switch_pro_report(dev_addr, instance, report, len);
         // 原始报文在前、语义事件在后：一条报文若是"读错了"，两行对着看即知
         hidkit_app_report(instance, report, len);
     }

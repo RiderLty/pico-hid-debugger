@@ -68,6 +68,7 @@ target_link_libraries(${target_name} PRIVATE
  pico_time
  hidkit
  hidkit_tusb_xinput
+ hidkit_tusb_switch_pro
 )
 
 # 输出走自管理的 UART0，不启用 SDK stdio 的默认串口/USB 通道

@@ -1,5 +1,6 @@
 # 构建产物
 build/
+build-host/
 
 # 上位机串口日志与固件副本（便于区分版本，但不入库）
 hid-debugger-*.log

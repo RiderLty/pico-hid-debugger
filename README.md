@@ -44,11 +44,12 @@ PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显
 | `[STRDS] dev=%u Mfg(1)="..." / Prod(2)="..." / Ser(3)="..."` | 字符串描述符（UTF-16 转可打印 ASCII） |
 | `[HIDMT] dev=%u vid=%04x pid=%04x itf=%u proto=%s cls=%02x sub=%02x eps=%u` | HID 接口挂载（proto: None/Keyboard/Mouse） |
 | `[RPTDS] dev=%u itf=%u len=%u off=..: <hex>` | HID 报告描述符原始转储 |
-| `[SWPRO] dev=%u itf=%u pid=%04x handshake start` / `[SWPRO] dev=%u send=%s len=%u` | Switch Pro 握手进度（`057e:2009/2006/2007` 需主机握手才开始上报；握手报文经中断 OUT 发出，设备应答 `0x81`/`0x21` 会作为输入报文出现在 `[HID]`，完成后开始 0x30 报文流） |
+| `[SWPRO] dev=%u itf=%u pid=%04x handshake start` / `[SWPRO] dev=%u send=%s len=%u` / `[SWPRO] dev=%u spi %s addr=0x%04x len=%u` / `[SWPRO] dev=%u calib ready (valid=0x%02x)` | Switch Pro 初始化进度（`057e:2009/2006/2007` 需主机握手才开始上报）：阶段 1 握手（应答 `0x81`/`0x21` 作为输入报文出现在 `[HID]`，完成后开始 0x30 报文流）；阶段 2 使能 IMU + 经 SPI 读回摇杆/六轴校准（用户校准区魔数 `B2 A1` 命中优先，读不到的项标 `timeout, default used`），读完组装注入 hidkit（`calib applied slot=N`） |
 | `[HID]   dev=%u itf=%u len=%u off=%u: <hex>` | **原始报文**（超 16 字节折行，`off=` 递增标注行内偏移）。受运行期开关控制，见「[运行期输出开关](#运行期输出开关)」 |
 | `[HIDKIT] key slot=%d code=0x%04X name=%s down\|up` | **语义事件**（键/鼠标按键/手柄按键统一出口，`code` 的段前缀区分类型：`0x00xx` 键盘 HID Usage ID、`0x01xx` 鼠标按键序号、`0x02xx` 手柄 `BTN_*`）。`name=` 是 `code` 对应的按键名（`src/key_names.c` 的词表，命名与 hidkit 的宏一致：`KEY_A` / `MOUSE_BUTTON_LEFT` / `BTN_DPAD_UP`，可直接回 grep `hidkit_codes.h`；词表外的 code 显示 `?`）—— **只加可读视图，`code` 原值照旧**。**仅在状态变化时**输出；`[HID]` 行也开着时紧跟触发它的那一行之后（上位机默认视图里 `[HID]` 是关的，所以通常看不到那行） |
 | `[HIDKIT] mouse slot=%d dx=%d dy=%d wheel=%d` | 鼠标位移与滚轮（仅非零时输出） |
-| `[HIDKIT] pad slot=%d ls=%d,%d rs=%d,%d lt=%d rt=%d` | 手柄绝对状态。**每份解析成功的报文都输出**（手柄报文本身就是当前绝对状态，不去重），故 1kHz 手柄下这行是持续的 |
+| `[HIDKIT] pad slot=%d ls=%d,%d rs=%d,%d lt=%d rt=%d btn=●○…` | 手柄绝对状态。**每份解析成功的报文都输出**（手柄报文本身就是当前绝对状态，不去重），故 1kHz 手柄下这行是持续的。`btn=` 是 32 位原生按钮位图，**bit31 在左**：`●`=按下 `○`=抬起（UTF-8，每字符 3 字节）。位序 = 手柄报文原生位序，Switch Pro 为 bit0..7 右组 `Y X B A SR SL R ZR`、bit8..15 共享 `− + RS LS Home Capture`、bit16..23 左组 `下 上 右 左 SR SL L ZL`（bit24..31 恒 ○）；DS5/XInput 见各自布局定义。注意面键 code 遵循 DS5 的物理位置约定（实体 B=南位=`BTN_A`、A=东位=`BTN_B`） |
+| `[HIDKIT] motion slot=%d g=%d,%d,%d a=%d,%d,%d` | 手柄六轴（陀螺仪 + 加速度计），每份含六轴的解析成功报文都输出（Switch Pro 需 `[SWPRO]` 阶段 2 使能 IMU 后才有数据；卸载时补发一次全零帧 = "设备已离开"）。量程约定：±32767 = ±2000 dps / ±4 g，静止时 accel 含重力（向量模长约 8192）。Pro 六轴坐标系对齐 DS5 |
 | `[HIDKIT] dropped slot=%d vid=%04X pid=%04X` | 设备被丢弃（槽位耗尽且策略为 `DROP_NEW`；本固件用默认的 `EVICT_IDLE`，走不到） |
 | `[HKDBG]  hidkit: ...` | **库内诊断**：库"自己怎么想的"——认领了哪个槽位、为什么不认、槽位被谁挤出、卸载、报文首次未被消费。只在冷路径打点，不随报文速率增长。判读"设备动作为什么没出来"看这行 |
 | `[UNHID] dev=%u itf=%u` | HID 接口拔出 |
@@ -183,6 +184,66 @@ cmake -S . -B build -DHIDKIT_LIB_DEBUG=0     # 只关库内诊断
 ### 容量
 
 `src/CMakeLists.txt` 给到 4 键盘 / 4 鼠标 / 4 手柄（共 12 槽位，≤ `CFG_TUH_HID`=16，不会出现"枚举得到却拿不到槽位"）。槽位耗尽时按 hidkit 默认策略 `EVICT_IDLE` 挤掉最久没有报文的设备，并**先补发"全部抬起"**，`[HKDBG]` 里会留一行 `evict slot N`。要改就改那几个 `HIDKIT_MAX_*` 编译定义。
+
+### Switch Pro 六轴初始化
+
+独立库 [`lib/hidkit-tusb-switch-pro`](lib/hidkit-tusb-switch-pro/README.md) 在 USB 握手后
+发送报告模式与 IMU 开启子命令，再读取 SPI 校准。该目录可以直接用于其他项目；
+CMake 目标 `hidkit_tusb_switch_pro` 提供 TinyUSB 发送适配，核心目标
+`hidkit_switch_pro_core` 不依赖 Pico/TinyUSB/hidkit。`src/switch_pro.c` 仅接入 Pico
+微秒时钟和调试器日志，`src/hidkit_app.c` 将独立校准结构转换并注入 hidkit。
+`0x01` 输出报文的布局是 `01 seq [8B rumble] subcmd data`：子命令在偏移 **10**，
+参数从偏移 **11** 开始；`seq` 为每设备独立、0..15 循环的包序号。
+USB 内部 UART 前缀由手柄固件添加，不能把它计入 HID 子命令偏移。
+
+初始化子命令收到 `0x21` 成功 ACK 才推进；约 105ms 超时重发，最多发送 3 次。
+开启成功时可见 `[SWPRO] dev=... ack=imu-on`；失败会输出恒开的 `[ERROR]`。
+SPI 校准回包核对 ACK、回显地址与完整数据长度，读取超时使用缺省值；用户校准读取
+失败时回退工厂值。`[SWPRO]` 信息行受 `INFO` 开关控制。
+
+`0x21` 子命令应答和 `0x81` USB 应答只交给协议处理，不产生手柄事件，也不改变
+上一帧输入状态。布局解析成功必须填好输入状态，不能把“控制应答已消费”当成
+“有新输入”；否则上层会读取未初始化的轴值或按钮映射指针，导致异常事件或停机。
+
+刷入固件并重新插拔手柄后，查看 `[HIDKIT] motion ...`：静止时陀螺仪可以接近零，
+加速度应包含重力（约 1g），转动手柄后六轴数值应随之变化。
+
+`motion` 行中的 `g=` 是陀螺仪归一化整数，`a=` 是加速度归一化整数，均为
+`-32767..32767`，不是直接以 °/s 或 g 输出。每轴换算为：
+
+| 输出 | 物理单位换算 | 输出量程 |
+|---|---|---|
+| `g` | `g × 2000 / 32767` °/s | ±2000 °/s |
+| `a` | `a × 4 / 32767` g | ±4 g；1 g ≈ 8192 |
+
+Switch 默认硬件量程为陀螺仪 ±2000 °/s、加速度 ±8 g；输出换算后限幅至上述量程。
+每轴使用 SPI 校准的 `origin` 与 `scale`：
+`gyro_dps = (raw - origin) × 936 / (scale - origin)`，
+`accel_g = raw × 4 / (scale - origin)`。
+无校准时使用 `gyro scale=13371`、`accel scale=16384`、`origin=0`。
+加速度的 origin 用于灵敏度分母；`0x6080` 的平放参考值含约 1g 重力，不从输出扣除。
+换算依据 [SDL Switch HIDAPI](https://github.com/libsdl-org/SDL/blob/main/src/joystick/hidapi/SDL_hidapi_switch.c)
+与 [IMU 校准协议](https://github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering/blob/master/imu_sensor_notes.md)。
+
+Switch Pro 的六轴先在传感器原生轴上校准，再按 `(X,Y,Z) → (-Y,Z,-X)` 转到
+DS5 的原生坐标系，加速度与角速度使用同一转换。此映射参考 SDL 的
+`SendSensorUpdate`，用于让 Pro 与 DS5 在同样持握姿态下的动作对应同一输出轴及符号。
+DS5 输出坐标保持原样；Joy-Con 的不同持握模式尚未统一，仍为原生坐标。
+游戏沿用 DS5 的轴映射即可；不同设备的零偏、采样率与滤波差异仍需实机对照，
+做角速度积分时必须使用实际采样间隔。
+
+协议来源：[Linux hid-nintendo](https://github.com/torvalds/linux/blob/master/drivers/hid/hid-nintendo.c)、
+[HID 报文布局](https://github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering/blob/master/bluetooth_hid_notes.md)、
+[IMU 与 SPI 子命令](https://github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering/blob/master/bluetooth_hid_subcommands_notes.md)、
+[USB 握手](https://github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering/blob/master/USB-HID-Notes.md)。
+
+无需硬件的协议回归测试（使用当前 hidkit 解析代码，并开启地址/未定义行为检查）：
+
+```bash
+cmake -S tests/host -B build-host
+cmake --build build-host
+ctest --test-dir build-host --output-on-failure
+```
 
 ## 构建
 

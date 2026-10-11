@@ -29,6 +29,8 @@
 #include "uart_output.h"
 #include "log_switch.h"
 #include "hidkit_app.h"
+#include "hid_host_app.h"   /* hid_app_emit_info（校准交付行走 INFO 位） */
+#include "hidkit_switch_pro_glue.h" /* 独立握手库 → hidkit 校准转换 */
 #include "key_names.h"
 
 /* instance → hidkit 槽位；-1 = 本库没接管这个接口（[HKDBG] 里能看到原因） */
@@ -106,15 +108,45 @@ void hidkit_input_mouse_abs(int8_t slot, int32_t dx, int32_t dy, int32_t wheel)
 
 // 手柄绝对状态：每份解析成功的报文都回调（不做去重），所以 1kHz 手柄下
 // 这行是持续的 —— 想看"只在变化时报"，得靠上位机过滤或关掉事件行。
+// btn= 是 32 位原生按钮位图（bit31 在左）：●=按下 ○=抬起。位序 = 手柄
+// 报文原生位序（Switch Pro：bit0..7 右组 Y X B A SR SL R ZR / bit8..15
+// 共享 − + RS LS Home Capture / bit16..23 左组 下 上 右 左 SR SL L ZL，
+// bit24..31 恒 0；DS5/XInput 见各自布局的 bit 定义）
 void hidkit_input_gamepad_abs(int8_t slot, int32_t ls_x, int32_t ls_y,
-                              int32_t rs_x, int32_t rs_y, int32_t lt, int32_t rt)
+                              int32_t rs_x, int32_t rs_y, int32_t lt, int32_t rt,
+                              uint32_t buttons)
 {
 #if HIDKIT_APP_EVENTS
-    emit_tagged(LOG_SW_HIDKIT, "HIDKIT", "pad slot=%d ls=%d,%d rs=%d,%d lt=%d rt=%d",
+    char btn[32 * 3 + 1];   // 32 × 3 字节 UTF-8 圆圈 + NUL
+    char *p = btn;
+    for (int i = 31; i >= 0; i--) {
+        memcpy(p, (buttons >> i) & 1u ? "\xE2\x97\x8F"  // ●
+                                      : "\xE2\x97\x8B", // ○
+               3);
+        p += 3;
+    }
+    *p = '\0';
+    emit_tagged(LOG_SW_HIDKIT, "HIDKIT",
+                "pad slot=%d ls=%d,%d rs=%d,%d lt=%d rt=%d btn=%s",
                 (int)slot, (int)ls_x, (int)ls_y, (int)rs_x, (int)rs_y,
-                (int)lt, (int)rt);
+                (int)lt, (int)rt, btn);
 #else
-    (void)slot; (void)ls_x; (void)ls_y; (void)rs_x; (void)rs_y; (void)lt; (void)rt;
+    (void)slot; (void)ls_x; (void)ls_y; (void)rs_x; (void)rs_y;
+    (void)lt; (void)rt; (void)buttons;
+#endif
+}
+
+// 手柄六轴运动数据（带 IMU 的手柄每份报文回调；卸载补发全零帧）。
+// 量程约定（hidkit.h）：±32767 = ±2000 dps / ±4 g
+void hidkit_input_gamepad_motion(int8_t slot, int16_t gx, int16_t gy, int16_t gz,
+                                 int16_t ax, int16_t ay, int16_t az)
+{
+#if HIDKIT_APP_EVENTS
+    emit_tagged(LOG_SW_HIDKIT, "HIDKIT",
+                "motion slot=%d g=%d,%d,%d a=%d,%d,%d",
+                (int)slot, (int)gx, (int)gy, (int)gz, (int)ax, (int)ay, (int)az);
+#else
+    (void)slot; (void)gx; (void)gy; (void)gz; (void)ax; (void)ay; (void)az;
 #endif
 }
 
@@ -212,6 +244,27 @@ void hidkit_app_umount(uint8_t instance)
     if (instance >= CFG_TUH_HID) return;
     if (s_slot[instance] >= 0) hidkit_umount(s_slot[instance]);
     s_slot[instance] = -1;
+}
+
+/*--------------------------------------------------------------------+
+ * Switch Pro 校准交付（覆盖独立握手库的弱符号）
+ *
+ * 握手模块经 SPI 读回手柄校准后回调到这里：映射到 hidkit 槽位注入，
+ * 布局解析（gamepad_switch.h）此后按校准量程换算摇杆与六轴
+ *--------------------------------------------------------------------*/
+
+void switch_pro_calibration(uint8_t dev_addr, uint8_t instance,
+                            const switch_pro_calib_t *cal)
+{
+    if (instance >= CFG_TUH_HID) return;
+    int8_t slot = s_slot[instance];
+    if (slot < 0) return;   // hidkit 尚未接管（罕见：校准先于挂载完成）
+
+    hidkit_switchpro_calib_t converted = hidkit_switch_pro_calibration(cal);
+    if (hidkit_switchpro_set_calib(slot, &converted)) {
+        hid_app_emit_info("[SWPRO] dev=%u calib applied slot=%d",
+                          dev_addr, (int)slot);
+    }
 }
 
 /*--------------------------------------------------------------------+

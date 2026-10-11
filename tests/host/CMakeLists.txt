@@ -1,0 +1,17 @@
+cmake_minimum_required(VERSION 3.13)
+project(switch_pro_host_tests C)
+enable_testing()
+
+add_subdirectory(../../lib/hidkit hidkit)
+add_library(tinyusb_host INTERFACE)
+add_subdirectory(../../lib/hidkit-tusb-switch-pro switch-pro)
+add_executable(switch_pro_host_tests test_switch_pro.c)
+target_include_directories(switch_pro_host_tests PRIVATE mocks ../../src)
+target_link_libraries(switch_pro_host_tests PRIVATE hidkit hidkit_tusb_switch_pro)
+target_compile_definitions(switch_pro_host_tests PRIVATE HIDKIT_DEBUG=0)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(switch_pro_host_tests PRIVATE
+        -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(switch_pro_host_tests PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME switch_pro_protocol COMMAND switch_pro_host_tests)

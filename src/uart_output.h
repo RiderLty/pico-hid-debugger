@@ -26,8 +26,9 @@
 #define UARTO_TX_PIN   2u
 #define UARTO_RX_PIN   3u
 
-// 单条记录上限（字节）。最长行为 16 字节 HEX 折行行，约 90 字符。
-#define UARTO_REC_MAX 128u
+// 单条记录上限（字节）。最长行为 16 字节 HEX 折行行（约 90 字符）与
+// 手柄 pad 行（含 32 位按钮位图，每个 ●/○ 为 3 字节 UTF-8，共 96 字节）。
+#define UARTO_REC_MAX 192u
 
 // 初始化 UART0 与队列、临界区。必须在 multicore_launch_core1() 之前调用：
 // 生产者（core1）随时可能入队，串口与自旋锁必须先就绪。

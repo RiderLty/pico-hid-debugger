@@ -213,6 +213,7 @@ set(HIDKIT_LIB_DEBUG 1 CACHE STRING "hidkit 库内诊断输出（HIDKIT_DEBUG）
 
 add_subdirectory(lib/hidkit)
 add_subdirectory(lib/hidkit-tusb-xinput)
+add_subdirectory(lib/hidkit-tusb-switch-pro)
 
 add_subdirectory(lib/Pico-PIO-USB)
 add_subdirectory(src)
