@@ -479,8 +479,17 @@ document.addEventListener('click', e => {
 });
 
 // ---------------------------------------------------------------- 字节流 → 行
+// 解码器必须是**长生命周期的**：TextDecoder 用 {stream:true} 时会把"末尾不完整的
+// 多字节序列"留在自己内部，等下一块拼齐。每收到一块就 new 一个解码器，等于每块
+// 都从干净状态开始，这个状态就丢了 —— 切在 UTF-8 字符中间的字节会被解成 U+FFFD
+// 替换符。串口 reader.read() 的分块边界任意，而 pad 行里 32 个 □ 是 96 字节连续
+// 多字节序列，几乎必然被切中：表现就是方框偶尔变成"奇怪的符号"、位数看着不对。
+// 解码器跟着端口的生命周期走（readLoop 每挂一次 reader 重建），clearLog 也要把它
+// 复位，否则上一轮残留的半截字节会污染新一轮的第一行。
+let byteDecoder = new TextDecoder();
+
 function handleBytes(value) {
-  lineBuf += new TextDecoder().decode(value, { stream: true });
+  lineBuf += byteDecoder.decode(value, { stream: true });
   let nl;
   while ((nl = lineBuf.indexOf('\n')) >= 0) {
     const line = lineBuf.slice(0, nl).replace(/\r$/, '');
@@ -531,6 +540,7 @@ swBoxes.forEach(b => b.addEventListener('change', () => {
 async function readLoop(p) {
   running = true;
   lineBuf = '';
+  byteDecoder = new TextDecoder();   // 每个连接从头开始，丢掉上一轮残留的半截字节
   setStatus('已连接 ' + keyOf(p) + ' @ ' + baud, 'ok');
   btnConnect.textContent = '断开';
 
@@ -674,6 +684,7 @@ setInterval(async () => {
 // pending 也要清 —— 它可能还压着上一轮已入队但还没写进 xterm 的行
 function clearLog() {
   allLines = []; viewLines = []; pending = []; lineBuf = '';
+  byteDecoder = new TextDecoder();
   rebuildTerm([]);
 }
 
