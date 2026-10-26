@@ -37,6 +37,13 @@
   #btnConnect { min-width: 6em; }
   #btnExport { margin-left: auto; }
   #count { font-size: 12px; color: #8b949e; }
+  /* 回报率：最近 RATE_WINDOW_MS 窗口内**通过当前过滤**的行数折算成 Hz。
+     定宽 + 右对齐，数字跳动不引起顶栏重排（与 #status 的定宽同一考虑） */
+  #rate {
+    font-size: 12px; color: #8b949e; min-width: 6.5em; text-align: right;
+    white-space: nowrap; font-variant-numeric: tabular-nums;
+  }
+  #rate b { color: #c9d1d9; font-weight: 600; }
   /* 固件输出开关：一个字节下发，每一位控一类输出（位表见固件 src/log_switch.h） */
   .swgroup {
     display: flex; align-items: center; gap: 8px; padding: 3px 10px;
@@ -130,6 +137,7 @@
     <label title="收到 [BOOT] 行（固件重启/复位）时清空上一轮日志"><input type="checkbox" id="clrBoot">重启清空</label>
   </span>
   <span id="count">0 行</span>
+  <span id="rate" title="回报率：最近 200ms 内**通过当前过滤**的行数折算成 Hz。它会跟着正则与固件输出开关变 —— 只留 [HIDKIT] pad 就是手柄的报文率，只留 [HID] 就是 HID 中断端点的报文率。注意这是「日志行」的速率，不是 HID 设备的真实回报率：固件按开关丢行、UART 过载还会丢行"><b>0.0</b> Hz</span>
 </header>
 <div id="hint" style="display:none"></div>
 <div id="logwrap">
@@ -154,6 +162,7 @@ const SW_DEFAULT = 0x13, SW_MASK = 0x1F;
 
 const $ = id => document.getElementById(id);
 const termEl = $('term'), statusEl = $('status'), countEl = $('count');
+const rateEl = $('rate');
 const btnConnect = $('btnConnect'), btnPick = $('btnPick'), btnClear = $('btnClear');
 const clrBootBox = $('clrBoot');       // 「重启清空」勾选框（本机偏好，不进固件掩码）
 const btnExport = $('btnExport'), baudSel = $('baud');
@@ -298,6 +307,57 @@ function passFilter(line) {
 }
 
 // ---------------------------------------------------------------- 输出
+// 回报率：滑动窗口计数。只统计**通过当前过滤**的行（正则 + 开关位），所以它
+// 就是"你现在看的这类事件的速率"——只留 [HIDKIT] 手柄行得到手柄报文率，只留
+// [HID] 得到中断端点的报文率。不另做 tag 白名单：看哪些行由已有的过滤控件决定。
+//
+// 统计的是**行**不是 HID 报文：关掉 [HID] 那固件根本不会发，UART 过载丢的行也
+// 不会到这儿。这是"可观测速率"，不是设备真实回报率（工具提示里写明了）。
+//
+// 窗口 200ms、每 100ms 刷新：用时间戳队列滑动，不用固定桶 —— 固定桶在窗口边缘
+// 有 ±1 桶的抖动。队列单调递增，超窗的从头部剔掉，摊还 O(1)。
+const RATE_WINDOW_MS = 200, RATE_TICK_MS = 100;
+let rateMarks = [];             // 通过过滤的行的时间戳（performance.now()）
+let rateSpanStart = 0;          // 本轮计数的起点：队列被清空时重置，保证窗口未填满
+                                // 时按**实际经过时间**折算（否则刚连上的第一个
+                                // 100ms 会把 100 行算成 1000Hz）
+let rateLastHz = 0;
+
+function rateMark() {
+  const now = performance.now();
+  if (rateMarks.length === 0) rateSpanStart = now;
+  rateMarks.push(now);
+}
+
+function rateReset() {
+  rateMarks = []; rateSpanStart = 0; rateLastHz = 0;
+  rateEl.innerHTML = '<b>0.0</b> Hz';
+  rateEl.title = '回报率：最近 ' + RATE_WINDOW_MS + 'ms 内通过当前过滤的行数折算成 Hz';
+}
+
+function rateTick() {
+  const now = performance.now();
+  const cut = now - RATE_WINDOW_MS;
+  let head = 0;
+  while (head < rateMarks.length && rateMarks[head] <= cut) head++;
+  if (head) rateMarks = rateMarks.slice(head);
+  // 队列空 = 窗口内没有行：速率 0，并把起点挪到当下，下次有行时重新起算 span
+  if (rateMarks.length === 0) { rateSpanStart = now; rateLastHz = 0; }
+  else {
+    const span = Math.max(50, Math.min(RATE_WINDOW_MS, now - rateSpanStart));
+    rateLastHz = rateMarks.length * 1000 / span;
+  }
+  // 定宽：12.345 与 1.0k 都只占约 5 字符，数字跳动不引起顶栏重排
+  const txt = rateLastHz >= 1000 ? (rateLastHz / 1000).toFixed(2) + 'k'
+                                 : rateLastHz.toFixed(1);
+  rateEl.innerHTML = '<b>' + txt + '</b> Hz';
+  rateEl.title = `回报率：最近 ${RATE_WINDOW_MS}ms 内通过当前过滤的行数折算`
+               + `（窗口内 ${rateMarks.length} 行 / ${Math.round(Math.min(RATE_WINDOW_MS, now - (rateSpanStart || now)))}ms）`;
+}
+
+setInterval(rateTick, RATE_TICK_MS);
+rateReset();
+
 function scheduleFlush() {
   if (writeScheduled) return;
   writeScheduled = true;
@@ -327,6 +387,7 @@ function appendLine(text) {
   if (passFilter(allLines[allLines.length - 1])) {
     pending.push(ansiWrap(cls, text));
     viewLines.push(allLines[allLines.length - 1]);   // 导出/过滤切换的数据源
+    rateMark();                                      // 回报率只数"看得见"的行
   }
   if (!atBottom) missCount++;
   // 超上限时批量截断模型头部（逐条 shift 为 O(n)，高频下代价大）；
@@ -388,6 +449,9 @@ function applyRegex(src) {
 
 function rebuildViewData() {
   viewLines = allLines.filter(passFilter);
+  // 过滤条件变了，"现在看到的这类事件"就变了：窗口里的旧时间戳属于上一套过滤，
+  // 留着会让读数在切换后的一两百毫秒里慢慢滑到新值 —— 直接清零重新起算
+  rateReset();
 }
 
 // 历史菜单：既是 ▾ 按钮的管理面板，也是输入时的补全下拉。
@@ -685,6 +749,7 @@ setInterval(async () => {
 function clearLog() {
   allLines = []; viewLines = []; pending = []; lineBuf = '';
   byteDecoder = new TextDecoder();
+  rateReset();                    // 旧的时间戳不能算进新会话的回报率
   rebuildTerm([]);
 }
 
