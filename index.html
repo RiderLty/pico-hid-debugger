@@ -347,7 +347,8 @@ function rateTick() {
     const span = Math.max(50, Math.min(RATE_WINDOW_MS, now - rateSpanStart));
     rateLastHz = rateMarks.length * 1000 / span;
   }
-  // 定宽：12.345 与 1.0k 都只占约 5 字符，数字跳动不引起顶栏重排
+  // 定宽：最宽也就是 "999.9" 或 "10.00k"，两种形态都是 5 字符，数字跳动不引起
+  // 顶栏重排（配合 #rate 的 min-width + 右对齐 + tabular-nums）
   const txt = rateLastHz >= 1000 ? (rateLastHz / 1000).toFixed(2) + 'k'
                                  : rateLastHz.toFixed(1);
   rateEl.innerHTML = '<b>' + txt + '</b> Hz';
