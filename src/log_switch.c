@@ -19,6 +19,7 @@
 #include "hardware/uart.h"
 
 #include "uart_output.h"
+#include "log_fmt.h"
 #include "log_switch.h"
 
 // 单字节 volatile：见文件头注释，这里不需要临界区
@@ -55,9 +56,10 @@ static void apply_mask(uint8_t byte)
     uint8_t const mask = (uint8_t)(byte & LOG_SW_MASK);   // 保留位忽略
     s_mask = mask;
 
-    char buf[80];
+    char buf[96];
     int n = snprintf(buf, sizeof(buf) - 2,
-                     "[CTRL]  sw=0x%02X hidkit=%u hkdbg=%u tusb=%u hid=%u info=%u\r\n",
+                     "[CTRL]  sw=0x%02X hidkit=" LOG_W_BIT " hkdbg=" LOG_W_BIT
+                     " tusb=" LOG_W_BIT " hid=" LOG_W_BIT " info=" LOG_W_BIT "\r\n",
                      mask,
                      (unsigned)((mask & LOG_SW_HIDKIT) != 0u),
                      (unsigned)((mask & LOG_SW_HKDBG) != 0u),

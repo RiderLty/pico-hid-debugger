@@ -20,6 +20,7 @@
 #include "hardware/gpio.h"
 
 #include "uart_output.h"
+#include "log_fmt.h"
 
 #define UARTO_QUEUE_DEPTH  1024u  // 2 的幂（掩码索引）；约 197KB 静态 RAM，
                                   // 可平滑枚举/多设备挂载等日志突发
@@ -101,7 +102,7 @@ void uart_output_flush(void)
             if (dropped) {
                 char buf[64];
                 int n = snprintf(buf, sizeof(buf) - 2,
-                                 "[DROP]  lost_lines=%lu\r\n",
+                                 "[DROP]  lost_lines=" LOG_W_DROP "\r\n",
                                  (unsigned long)dropped);
                 if (n > 0) uart_output_write_direct(buf, (size_t)n);
             }

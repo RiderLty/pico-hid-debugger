@@ -78,6 +78,8 @@ tuh_task()                                      while(1) 循环：
 每行 `\r\n` 结尾。行格式权威定义见 [README.md](README.md)「输出格式」一节。格式约定：
 
 - TAG 定宽：`[TAG]` 紧跟 TAG 本体，其后用空格补齐到第 8 列（`TAG_COL`）再输出内容——hexdump 内用 `%*s` 补位，其余 emit 行的 TAG 均为 5 字符 + 1 空格天然对齐。**例外**：`[HIDKIT]`/`[HKDBG]`（6/5 字符）统一补到第 9 列（`hidkit_app.c` 的 `HK_TAG_COL`），两族行彼此对齐。
+- **数值字段定宽、左补空格**：所有十进制数字段一律写 `src/log_fmt.h` 里的 `LOG_W_*` 宏，不直接写 `%u`/`%d`。宽度取**该字段值域上限**（`dev` 2 格、`len`/`off`/`total`/字节型描述符字段 3 格、`slot` 2 格、摇杆/六轴 6 格、扳机 5 格），不取类型上限——`len`/`off` 按 uint16 上限要占 5 格，hexdump 前缀会被撑长，白烧 UART 带宽。**十六进制标识符是例外，保持 0 补**（`vid=%04x`/`pid=%04x`/`code=0x%04X`/`langid=0x%04x`/`cls=%02x`/`attr=0x%02x`：左边补空格会把 0x046d 读成 "0x 46d"，语义就没了）。新增行/字段时先把宽度宏加进 `log_fmt.h`（带值域注释），再在调用点拼接——格式检查（`__attribute__((format))`）对相邻字面量拼接照常生效。
+- 手柄按钮位图**整体包一对中括号**：`btn=[■□…]`，32 格、bit31 在左，`■`(U+25A0)=按下、`□`(U+25A1)=抬起（各 3 字节 UTF-8；宽度随终端对 East Asian Ambiguous 的处理而定，但 32 格彼此一致）。不做逐键 `[■][□]`：那会涨到 128 字节一行，逼近 `UARTO_REC_MAX` 且 1kHz 手柄下白烧带宽。
 - HEX 折行 dump 统一走 `hexdump()`：每行前缀含 `len=`（整块总长）与 `off=`（本行起始偏移），前缀用空格补齐到固定列 `HEX_COL`（40）后才输出数据，跨行数据列垂直对齐。`itf_num` 传 `-1` 省略 itf 字段（设备级描述符），报文与报告描述符传实际接口号。
 - 运行期开关按 TAG 分族：`[HIDKIT]`/`[HKDBG]`/`[TUSB]`/`[HID]` 各一位，挂载与描述符行（`[MOUNT]`/`[DEVDS]`/`[CFGDS]`/`[STRDS]`/`[HIDMT]`/`[RPTDS]`/`[UNHID]`/`[DEVRM]`）共用 `INFO` 位；`[BOOT]`/`[ERROR]`/`[DROP]`/`[CTRL]` 恒开。
 
@@ -90,6 +92,7 @@ tuh_task()                                      while(1) 循环：
 | `src/hidkit_app.c/.h` | **语义层接线**：实现 hidkit 的四个弱符号出口（`hidkit_input_*`）与库内诊断出口（`hidkit_debug_printf`）→ `[HIDKIT]`/`[HKDBG]` 行；维护 instance→槽位映射；**定义 `usbh_app_driver_get_cb()`** 转发 XInput 适配器的类驱动（该钩子全工程只能有一个定义，适配器刻意不定义）。static `emit_tagged(bit, tag, fmt, ...)` 首参是开关位 |
 | `src/key_names.c/.h` | **按键名词表**：hidkit 统一按键 code → 名称，给 `[HIDKIT] key` 行的 `name=` 字段用。名称即 `hidkit_codes.h` 的宏名（`KEY_A`/`MOUSE_BUTTON_LEFT`/`BTN_DPAD_UP`），表按该头文件逐条生成、下标 = Usage ID / 按键序号 / `BTN_*`，词表外返回 `NULL`（打印 `?`）；`code=` 原值不受影响。纯查表、只在按键边沿调用，受 `HIDKIT_APP_EVENTS` 门控（置 0 时连词表都不进 flash） |
 | `src/log_switch.c/.h` | **运行期输出开关**：位定义（`LOG_SW_*`/`LOG_SW_DEFAULT`=0x13）、`log_switch_init()`（core0，置默认值 + 读丢弃 RX 残留，必须在 launch core1 之前）、`log_switch_on()`（热路径只读单字节 volatile）、`log_switch_poll()`（core0 排空 UART RX、应用掩码、回 `[CTRL]`）。位表是**固件与 index.html 的接口**，改这里要同步改 `index.html` 的 `data-sw` 与 README 的表 |
+| `src/log_fmt.h` | **数字字段宽度表**：`LOG_W_*` 宏（`LOG_W_DEV`/`LOG_W_LEN`/`LOG_W_STICK`…），所有 emit 行的十进制字段一律拼接这些宏，不写裸 `%u`/`%d`——固定长度、左补空格，同一字段跨行占据同一列。宽度按值域取（注释里写明依据），十六进制标识符不在此列（保持 0 补定宽）。 |
 | `src/uart_output.c/.h` | 跨核传输层：SPSC 字节块队列、UART0 初始化（GPIO2/3 @ 4000000）、core0 批量写出、core0 直写出口 `uart_output_write_direct()`；RX 上拉在此设置（防悬空噪声被当成开关指令） |
 | `src/tusb_log.c/.h` | TinyUSB 内部日志桥接：`CFG_TUSB_DEBUG_PRINTF` 挂接 `tu_printf`，片段按行组装（core1 临界区防穿插），`[TUSB]` 头入队 |
 | `src/tusb_config.h` | TinyUSB 配置：仅 Host 栈（CFG_TUD_ENABLED=0），Host HID×16 + Hub + `CFG_TUH_XINPUT`，枚举缓冲 512，`CFG_TUSB_DEBUG=3`（SDK 命令行自带 `-DCFG_TUSB_DEBUG=0`，故这里先 `#undef` 再定义，否则每份 TU 都报 redefined） |

@@ -15,6 +15,7 @@
 
 #include "uart_output.h"
 #include "log_switch.h"
+#include "log_fmt.h"
 #include "hid_host_app.h"
 #include "hidkit_app.h"
 #include "switch_pro.h"
@@ -103,10 +104,14 @@ static void hexdump(uint8_t bit, const char *tag, uint8_t dev_addr, int itf_num,
 
         int used;
         if (itf_num >= 0) {
-            used = snprintf(line, sizeof(line) - 2, "[%s]%*sdev=%u itf=%u len=%u off=%u:",
+            used = snprintf(line, sizeof(line) - 2,
+                            "[%s]%*sdev=" LOG_W_DEV " itf=" LOG_W_ITF
+                            " len=" LOG_W_LEN " off=" LOG_W_OFF ":",
                             tag, tag_pad, "", dev_addr, (unsigned)itf_num, len, off);
         } else {
-            used = snprintf(line, sizeof(line) - 2, "[%s]%*sdev=%u len=%u off=%u:",
+            used = snprintf(line, sizeof(line) - 2,
+                            "[%s]%*sdev=" LOG_W_DEV " len=" LOG_W_LEN
+                            " off=" LOG_W_OFF ":",
                             tag, tag_pad, "", dev_addr, len, off);
         }
         if (used < 0) return;
@@ -169,7 +174,8 @@ static desc_state_t *state_of(uint8_t dev_addr)
 
 static void desc_fetch_fail(desc_state_t *st, uint8_t dev_addr)
 {
-    hid_app_emit("[ERROR] dev=%u desc fetch busy/failed (step=%u)", dev_addr, st->step);
+    hid_app_emit("[ERROR] dev=" LOG_W_DEV " desc fetch busy/failed (step=" LOG_W_STEP ")",
+                 dev_addr, st->step);
     st->step = DS_IDLE;
 }
 
@@ -196,7 +202,8 @@ static void emit_string(desc_state_t *st, uint8_t dev_addr, const char *label, u
 {
     uint8_t len = st->str_buf[0];
     if (len < 4u || st->str_buf[1] != TUSB_DESC_STRING) {
-        hid_app_emit_info("[STRDS] dev=%u %s(%u) <invalid>", dev_addr, label, idx);
+        hid_app_emit_info("[STRDS] dev=" LOG_W_DEV " %s(" LOG_W_BYTE ") <invalid>",
+                          dev_addr, label, idx);
         return;
     }
 
@@ -207,7 +214,8 @@ static void emit_string(desc_state_t *st, uint8_t dev_addr, const char *label, u
         text[n++] = (c >= 0x20u && c < 0x7Fu) ? (char)c : '?';
     }
     text[n] = '\0';
-    hid_app_emit_info("[STRDS] dev=%u %s(%u)=\"%s\"", dev_addr, label, idx, text);
+    hid_app_emit_info("[STRDS] dev=" LOG_W_DEV " %s(" LOG_W_BYTE ")=\"%s\"",
+                      dev_addr, label, idx, text);
 }
 
 // 控制传输完成回调：dump 当前步结果并发起下一步
@@ -218,8 +226,8 @@ static void desc_xfer_cb(tuh_xfer_t *xfer)
     if (!st || st->step == DS_IDLE) return;
 
     if (xfer->result != XFER_RESULT_SUCCESS) {
-        hid_app_emit("[ERROR] dev=%u desc fetch result=%d (step=%u)",
-                     xfer->daddr, (int)xfer->result, st->step);
+        hid_app_emit("[ERROR] dev=" LOG_W_DEV " desc fetch result=" LOG_W_RES " (step="
+                     LOG_W_STEP ")", xfer->daddr, (int)xfer->result, st->step);
         st->step = DS_IDLE;
         return;
     }
@@ -227,13 +235,14 @@ static void desc_xfer_cb(tuh_xfer_t *xfer)
     switch (st->step) {
     case DS_DEV: {
         tusb_desc_device_t const *d = (tusb_desc_device_t const *)st->dev_buf;
-        hid_app_emit_info("[DEVDS] dev=%u vid=%04x pid=%04x bcdUSB=%04x cls=%02x/%02x/%02x "
-                     "pkt0=%u bcdDev=%04x cfgs=%u",
+        hid_app_emit_info("[DEVDS] dev=" LOG_W_DEV " vid=%04x pid=%04x bcdUSB=%04x "
+                     "cls=%02x/%02x/%02x pkt0=" LOG_W_BYTE " bcdDev=%04x cfgs=" LOG_W_BYTE,
                      xfer->daddr, d->idVendor, d->idProduct, d->bcdUSB,
                      d->bDeviceClass, d->bDeviceSubClass, d->bDeviceProtocol,
                      d->bMaxPacketSize0, d->bcdDevice, d->bNumConfigurations);
-        hid_app_emit_info("[DEVDS] dev=%u iMfg=%u iProd=%u iSer=%u",
-                     xfer->daddr, d->iManufacturer, d->iProduct, d->iSerialNumber);
+        hid_app_emit_info("[DEVDS] dev=" LOG_W_DEV " iMfg=" LOG_W_BYTE " iProd=" LOG_W_BYTE
+                     " iSer=" LOG_W_BYTE, xfer->daddr, d->iManufacturer, d->iProduct,
+                     d->iSerialNumber);
         hexdump(LOG_SW_INFO, "DEVDS", xfer->daddr, -1, st->dev_buf,
                 (uint16_t)xfer->actual_len);
 
@@ -252,7 +261,8 @@ static void desc_xfer_cb(tuh_xfer_t *xfer)
 
     case DS_CFG: {
         tusb_desc_configuration_t const *c = (tusb_desc_configuration_t const *)st->cfg_buf;
-        hid_app_emit_info("[CFGDS] dev=%u total=%u itfs=%u cfg=%u attr=0x%02x power=%umA",
+        hid_app_emit_info("[CFGDS] dev=" LOG_W_DEV " total=" LOG_W_TOTAL " itfs=" LOG_W_BYTE
+                     " cfg=" LOG_W_BYTE " attr=0x%02x power=" LOG_W_POWER "mA",
                      xfer->daddr, c->wTotalLength, c->bNumInterfaces, c->bConfigurationValue,
                      c->bmAttributes, c->bMaxPower * 2u);
         hexdump(LOG_SW_INFO, "CFGDS", xfer->daddr, -1, st->cfg_buf,
@@ -270,7 +280,7 @@ static void desc_xfer_cb(tuh_xfer_t *xfer)
     case DS_LANG: {
         if (xfer->actual_len >= 4u) {
             st->langid = (uint16_t)(st->str_buf[2] | (st->str_buf[3] << 8));
-            hid_app_emit_info("[STRDS] dev=%u langid=0x%04x", xfer->daddr, st->langid);
+            hid_app_emit_info("[STRDS] dev=" LOG_W_DEV " langid=0x%04x", xfer->daddr, st->langid);
         }
         st->step = DS_IDLE;   // fetch_next_string 内部会推进到具体字符串
         fetch_next_string(st, xfer->daddr);
@@ -303,11 +313,12 @@ void tuh_mount_cb(uint8_t dev_addr)
 {
     uint16_t vid, pid;
     tuh_vid_pid_get(dev_addr, &vid, &pid);
-    hid_app_emit_info("[MOUNT] dev=%u vid=%04x pid=%04x", dev_addr, vid, pid);
+    hid_app_emit_info("[MOUNT] dev=" LOG_W_DEV " vid=%04x pid=%04x", dev_addr, vid, pid);
 
     desc_state_t *st = state_of(dev_addr);
     if (!st) {
-        hid_app_emit("[ERROR] dev=%u exceeds dev table (%u)", dev_addr, DESC_MAX_DEV);
+        hid_app_emit("[ERROR] dev=" LOG_W_DEV " exceeds dev table (" LOG_W_BYTE ")",
+                     dev_addr, DESC_MAX_DEV);
         return;
     }
     memset(st, 0, sizeof(*st));
@@ -322,7 +333,7 @@ void tuh_mount_cb(uint8_t dev_addr)
 // 设备移除（掉线或拔出）
 void tuh_umount_cb(uint8_t dev_addr)
 {
-    hid_app_emit_info("[DEVRM] dev=%u", dev_addr);
+    hid_app_emit_info("[DEVRM] dev=" LOG_W_DEV, dev_addr);
     desc_state_t *st = state_of(dev_addr);
     if (st) st->step = DS_IDLE;
 }
@@ -347,7 +358,8 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
         s_itf_num[instance] = itf_num;
     }
 
-    hid_app_emit_info("[HIDMT] dev=%u vid=%04x pid=%04x itf=%u proto=%s cls=%02x sub=%02x eps=%u",
+    hid_app_emit_info("[HIDMT] dev=" LOG_W_DEV " vid=%04x pid=%04x itf=" LOG_W_ITF
+         " proto=%s cls=%02x sub=%02x eps=" LOG_W_BYTE,
          dev_addr, vid, pid, itf_num,
          itf_protocol < 3u ? s_proto_str[itf_protocol] : "?", cls, sub, eps);
 
@@ -355,7 +367,8 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
     if (desc_report && desc_len) {
         hexdump(LOG_SW_INFO, "RPTDS", dev_addr, (int)itf_num, desc_report, desc_len);
     } else {
-        hid_app_emit_info("[RPTDS] dev=%u itf=%u not captured (>enum buf)", dev_addr, itf_num);
+        hid_app_emit_info("[RPTDS] dev=" LOG_W_DEV " itf=" LOG_W_ITF " not captured (>enum buf)",
+                          dev_addr, itf_num);
     }
 
     // 语义层：把接口信息与报告描述符交给 hidkit 判定是否接管。
@@ -369,7 +382,7 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
     switch_pro_maybe_mount(dev_addr, instance, vid, pid);
 
     if (!tuh_hid_receive_report(dev_addr, instance)) {
-        hid_app_emit("[ERROR] dev=%u cannot request report", dev_addr);
+        hid_app_emit("[ERROR] dev=" LOG_W_DEV " cannot request report", dev_addr);
     }
 }
 
@@ -377,7 +390,7 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
 void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance)
 {
     uint8_t itf_num = (instance < CFG_TUH_HID) ? s_itf_num[instance] : 0;
-    hid_app_emit_info("[UNHID] dev=%u itf=%u", dev_addr, itf_num);
+    hid_app_emit_info("[UNHID] dev=" LOG_W_DEV " itf=" LOG_W_ITF, dev_addr, itf_num);
     // 清握手状态机槽位（若该设备在跑/已跑完握手）
     switch_pro_umount(dev_addr);
     // 释放 hidkit 槽位：库内先按布局表补发"全部抬起"（按键不会残留"按着"）
@@ -402,6 +415,6 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance,
     }
 
     if (!tuh_hid_receive_report(dev_addr, instance)) {
-        hid_app_emit("[ERROR] dev=%u cannot request report", dev_addr);
+        hid_app_emit("[ERROR] dev=" LOG_W_DEV " cannot request report", dev_addr);
     }
 }

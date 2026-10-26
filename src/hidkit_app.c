@@ -28,6 +28,7 @@
 
 #include "uart_output.h"
 #include "log_switch.h"
+#include "log_fmt.h"
 #include "hidkit_app.h"
 #include "hid_host_app.h"   /* hid_app_emit_info（校准交付行走 INFO 位） */
 #include "hidkit_switch_pro_glue.h" /* 独立握手库 → hidkit 校准转换 */
@@ -88,7 +89,7 @@ void hidkit_input_key(int8_t slot, uint16_t code, bool pressed)
 {
 #if HIDKIT_APP_EVENTS
     const char *const name = key_name_lookup(code);
-    emit_tagged(LOG_SW_HIDKIT, "HIDKIT", "key slot=%d code=0x%04X name=%s %s",
+    emit_tagged(LOG_SW_HIDKIT, "HIDKIT", "key slot=" LOG_W_SLOT " code=0x%04X name=%s %s",
                 (int)slot, (unsigned)code, name ? name : "?", pressed ? "down" : "up");
 #else
     (void)slot; (void)code; (void)pressed;
@@ -99,8 +100,9 @@ void hidkit_input_key(int8_t slot, uint16_t code, bool pressed)
 void hidkit_input_mouse_abs(int8_t slot, int32_t dx, int32_t dy, int32_t wheel)
 {
 #if HIDKIT_APP_EVENTS
-    emit_tagged(LOG_SW_HIDKIT, "HIDKIT", "mouse slot=%d dx=%d dy=%d wheel=%d",
-                (int)slot, (int)dx, (int)dy, (int)wheel);
+    emit_tagged(LOG_SW_HIDKIT, "HIDKIT",
+                "mouse slot=" LOG_W_SLOT " dx=" LOG_W_MOUSE " dy=" LOG_W_MOUSE
+                " wheel=" LOG_W_MOUSE, (int)slot, (int)dx, (int)dy, (int)wheel);
 #else
     (void)slot; (void)dx; (void)dy; (void)wheel;
 #endif
@@ -108,26 +110,35 @@ void hidkit_input_mouse_abs(int8_t slot, int32_t dx, int32_t dy, int32_t wheel)
 
 // 手柄绝对状态：每份解析成功的报文都回调（不做去重），所以 1kHz 手柄下
 // 这行是持续的 —— 想看"只在变化时报"，得靠上位机过滤或关掉事件行。
-// btn= 是 32 位原生按钮位图（bit31 在左）：●=按下 ○=抬起。位序 = 手柄
-// 报文原生位序（Switch Pro：bit0..7 右组 Y X B A SR SL R ZR / bit8..15
-// 共享 − + RS LS Home Capture / bit16..23 左组 下 上 右 左 SR SL L ZL，
-// bit24..31 恒 0；DS5/XInput 见各自布局的 bit 定义）
+// btn= 是 32 位原生按钮位图（bit31 在左），整体包在一对中括号里：■=按下
+// □=抬起。位序 = 手柄报文原生位序（Switch Pro：bit0..7 右组 Y X B A SR SL
+// R ZR / bit8..15 共享 − + RS LS Home Capture / bit16..23 左组 下 上 右 左
+// SR SL L ZL，bit24..31 恒 0；DS5/XInput 见各自布局的 bit 定义）。
+//
+// 为什么整体包一对而不是逐键 [■][□]：32 键逐键包裹是 128 字节，一行逼近
+// UARTO_REC_MAX 且 1kHz 下白烧带宽；整体包裹只多 2 字节，方格数与位一一对应，
+// 靠列位即可定位是第几位。■/□ 是 East Asian Ambiguous 宽度的字符（西文终端
+// 算 1 列、CJK 环境算 2 列），但 32 格宽度彼此一致，位图内部始终逐列对齐。
 void hidkit_input_gamepad_abs(int8_t slot, int32_t ls_x, int32_t ls_y,
                               int32_t rs_x, int32_t rs_y, int32_t lt, int32_t rt,
                               uint32_t buttons)
 {
 #if HIDKIT_APP_EVENTS
-    char btn[32 * 3 + 1];   // 32 × 3 字节 UTF-8 圆圈 + NUL
+    char btn[2 + 32 * 3 + 1];   // '[' + 32 × 3 字节 UTF-8 方格 + ']' + NUL
     char *p = btn;
+    *p++ = '[';
     for (int i = 31; i >= 0; i--) {
-        memcpy(p, (buttons >> i) & 1u ? "\xE2\x97\x8F"  // ●
-                                      : "\xE2\x97\x8B", // ○
+        memcpy(p, (buttons >> i) & 1u ? "\xE2\x96\xA0"  // ■ U+25A0
+                                      : "\xE2\x96\xA1", // □ U+25A1
                3);
         p += 3;
     }
+    *p++ = ']';
     *p = '\0';
     emit_tagged(LOG_SW_HIDKIT, "HIDKIT",
-                "pad slot=%d ls=%d,%d rs=%d,%d lt=%d rt=%d btn=%s",
+                "pad slot=" LOG_W_SLOT " ls=" LOG_W_STICK ", " LOG_W_STICK
+                " rs=" LOG_W_STICK ", " LOG_W_STICK
+                " lt=" LOG_W_TRIG " rt=" LOG_W_TRIG " btn=%s",
                 (int)slot, (int)ls_x, (int)ls_y, (int)rs_x, (int)rs_y,
                 (int)lt, (int)rt, btn);
 #else
@@ -143,7 +154,9 @@ void hidkit_input_gamepad_motion(int8_t slot, int16_t gx, int16_t gy, int16_t gz
 {
 #if HIDKIT_APP_EVENTS
     emit_tagged(LOG_SW_HIDKIT, "HIDKIT",
-                "motion slot=%d g=%d,%d,%d a=%d,%d,%d",
+                "motion slot=" LOG_W_SLOT " g=" LOG_W_MOTION ", " LOG_W_MOTION
+                ", " LOG_W_MOTION " a=" LOG_W_MOTION ", " LOG_W_MOTION
+                ", " LOG_W_MOTION,
                 (int)slot, (int)gx, (int)gy, (int)gz, (int)ax, (int)ay, (int)az);
 #else
     (void)slot; (void)gx; (void)gy; (void)gz; (void)ax; (void)ay; (void)az;
@@ -154,7 +167,7 @@ void hidkit_input_gamepad_motion(int8_t slot, int16_t gx, int16_t gy, int16_t gz
 void hidkit_input_dropped(int8_t slot, uint16_t vid, uint16_t pid)
 {
 #if HIDKIT_APP_EVENTS
-    emit_tagged(LOG_SW_HIDKIT, "HIDKIT", "dropped slot=%d vid=%04X pid=%04X",
+    emit_tagged(LOG_SW_HIDKIT, "HIDKIT", "dropped slot=" LOG_W_SLOT " vid=%04X pid=%04X",
                 (int)slot, (unsigned)vid, (unsigned)pid);
 #else
     (void)slot; (void)vid; (void)pid;
@@ -262,7 +275,7 @@ void switch_pro_calibration(uint8_t dev_addr, uint8_t instance,
 
     hidkit_switchpro_calib_t converted = hidkit_switch_pro_calibration(cal);
     if (hidkit_switchpro_set_calib(slot, &converted)) {
-        hid_app_emit_info("[SWPRO] dev=%u calib applied slot=%d",
+        hid_app_emit_info("[SWPRO] dev=" LOG_W_DEV " calib applied slot=" LOG_W_SLOT,
                           dev_addr, (int)slot);
     }
 }

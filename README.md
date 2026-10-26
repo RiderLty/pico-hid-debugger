@@ -28,6 +28,8 @@ PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显
 每行 `\r\n` 结尾，`[TAG]` 定界。格式约定：
 
 - **TAG 定宽**：`[TAG]` 中括号紧跟 TAG 本体，其后用空格补齐到**第 8 列**再输出内容，所有行的内容列对齐（`[HID]` 补 3 格、`[DROP]` 补 2 格、`[MOUNT]` 补 1 格）。唯二的例外是 `[HIDKIT]`/`[HKDBG]`：TAG 本身就有 6/5 个字符，内容列统一放在**第 9 列**（彼此对齐，与其余行差一格）；
+- **数字定宽、左补空格**：所有十进制字段固定长度，`dev= 2` 与 `dev=12` 的后续字段落在同一列，纵向扫日志时数字位逐列对齐（`len=`/`off=`/`total=` 3 格，摇杆与六轴 6 格含符号，扳机 5 格，槽位/dev/itf 2 格）。宽度表在 `src/log_fmt.h`。**十六进制标识符例外，保持 0 补定宽**（`vid=046d`、`code=0x0004`）——左边补空格会把 `0x046d` 读成 `0x 46d`，语义就没了；
+- **例外：`[SWPRO]` 与 `[HKDBG]` 行不定宽**。这两族的格式串来自只读子模块（`lib/hidkit-tusb-switch-pro`、`lib/hidkit`），本仓库不改那里，数字按 `%u`/`%d` 原样输出；
 - **HEX 转储行**（`DEVDS`/`CFGDS`/`RPTDS`/`HID`）前缀含 `len=`（整块总长）与 `off=`（本行起始偏移），前缀用空格补齐到**固定第 40 列**后才输出数据，每行 16 字节——超长报文（如 DS5 手柄 64 字节报告）跨行数据列严格垂直对齐。
 
 | 行格式 | 含义 |
@@ -35,49 +37,49 @@ PIO-USB 端口（GPIO 12/13）枚举插入的 USB 设备：挂载时抓取并显
 | `[BOOT]  system init: pico-hid-debugger uart=4000000 8N1 tusb=0.18.0 hubpatch=1 piousb=9510f79 hkdbg=1 hkevt=1 sw=0x13` | 启动标记（开机第一条输出，先于任何 TinyUSB 日志；见到它即知本连接从系统启动起完整抓取）。`tusb=` 是实际链接的 TinyUSB 版本，`hubpatch=` 表示 hub 驱动韧性补丁是否生效，**`piousb=` 是 PIO-USB 子模块当前提交**——排查前先核对这三个值，避免"日志看着一样、其实刷的是上一版固件"。`hkdbg=`/`hkevt=` 是 hidkit 语义层的两个**编译期**开关（库内诊断 / 事件行）：**"为什么没有 `[HIDKIT]` 行"先看这两个值**，与"刷错固件"是同一类误判。**`sw=` 是运行期开关的上电默认掩码**（收到任何下行指令之前的值）——实际生效值以 `[CTRL]` 行为准，上位机连上就会把记忆的值压下来 |
 | `[CTRL]  sw=0x13 hidkit=1 hkdbg=1 tusb=0 hid=0 info=1` | **运行期开关回执**：收到一个下行字节就回一行，报出应用后的掩码。"我发的字节到了吗""现在到底开着哪些"看这一行。恒开，不受开关自身影响 |
 | `[PIODBG] kind=SETUP ep=00 res=-1 started=0 sync=01 pid=A5 retry=0 att=21111/20/39 seq=31` | **事务失败探针**（诊断用；三类事务各留一份不会被覆盖的样本，每类每 200ms 最多一行）。**判读看 `sync`/`pid`**：`sync=00 pid=00` = 真的什么都没收到（对端无应答）；非 0 但不像合法握手 = 收到了但**锁偏错帧**（把 `sync<<1\|carry` 还原即可，例：`01 A5` 就是 `80 D2` = SYNC+ACK）。`att=IN/OUT/SETUP` 为累计尝试次数 |
-| `[MOUNT] dev=%u vid=%04x pid=%04x` | 设备枚举完成（含 hub 设备自身） |
-| `[DEVDS] dev=%u vid=... bcdUSB=... cls=.. pkt0=... cfgs=...` | 设备描述符关键字段 |
-| `[DEVDS] dev=%u len=18 off=..: <hex>` | 设备描述符原始转储 |
-| `[CFGDS] dev=%u total=%u itfs=%u cfg=%u attr=0x%02x power=%umA` | 配置描述符关键字段 |
-| `[CFGDS] dev=%u len=%u off=..: <hex>` | 配置描述符原始转储（含全部接口/端点/HID 描述符） |
-| `[STRDS] dev=%u langid=0x%04x` | 支持的语言 ID |
-| `[STRDS] dev=%u Mfg(1)="..." / Prod(2)="..." / Ser(3)="..."` | 字符串描述符（UTF-16 转可打印 ASCII） |
-| `[HIDMT] dev=%u vid=%04x pid=%04x itf=%u proto=%s cls=%02x sub=%02x eps=%u` | HID 接口挂载（proto: None/Keyboard/Mouse） |
-| `[RPTDS] dev=%u itf=%u len=%u off=..: <hex>` | HID 报告描述符原始转储 |
+| `[MOUNT] dev= 2 vid=046d pid=c52b` | 设备枚举完成（含 hub 设备自身） |
+| `[DEVDS] dev= 2 vid=046d pid=c52b bcdUSB=0210 cls=00/00/00 pkt0= 64 bcdDev=2700 cfgs=  1` | 设备描述符关键字段 |
+| `[DEVDS] dev= 2 len= 18 off=  0: <hex>` | 设备描述符原始转储 |
+| `[CFGDS] dev= 2 total= 59 itfs=  1 cfg=  1 attr=0xa0 power= 50mA` | 配置描述符关键字段 |
+| `[CFGDS] dev= 2 len= 59 off=  0: <hex>` | 配置描述符原始转储（含全部接口/端点/HID 描述符） |
+| `[STRDS] dev= 2 langid=0x0409` | 支持的语言 ID |
+| `[STRDS] dev= 2 Mfg(  1)="..." / Prod(  2)="..." / Ser(  3)="..."` | 字符串描述符（UTF-16 转可打印 ASCII） |
+| `[HIDMT] dev= 2 vid=046d pid=c52b itf= 0 proto=Mouse cls=03 sub=01 eps=  1` | HID 接口挂载（proto: None/Keyboard/Mouse） |
+| `[RPTDS] dev= 2 itf= 0 len= 67 off=  0: <hex>` | HID 报告描述符原始转储 |
 | `[SWPRO] dev=%u itf=%u pid=%04x handshake start` / `[SWPRO] dev=%u send=%s len=%u` / `[SWPRO] dev=%u spi %s addr=0x%04x len=%u` / `[SWPRO] dev=%u calib ready (valid=0x%02x)` | Switch Pro 初始化进度（`057e:2009/2006/2007` 需主机握手才开始上报）：阶段 1 握手（应答 `0x81`/`0x21` 作为输入报文出现在 `[HID]`，完成后开始 0x30 报文流）；阶段 2 使能 IMU + 经 SPI 读回摇杆/六轴校准（用户校准区魔数 `B2 A1` 命中优先，读不到的项标 `timeout, default used`），读完组装注入 hidkit（`calib applied slot=N`） |
-| `[HID]   dev=%u itf=%u len=%u off=%u: <hex>` | **原始报文**（超 16 字节折行，`off=` 递增标注行内偏移）。受运行期开关控制，见「[运行期输出开关](#运行期输出开关)」 |
-| `[HIDKIT] key slot=%d code=0x%04X name=%s down\|up` | **语义事件**（键/鼠标按键/手柄按键统一出口，`code` 的段前缀区分类型：`0x00xx` 键盘 HID Usage ID、`0x01xx` 鼠标按键序号、`0x02xx` 手柄 `BTN_*`）。`name=` 是 `code` 对应的按键名（`src/key_names.c` 的词表，命名与 hidkit 的宏一致：`KEY_A` / `MOUSE_BUTTON_LEFT` / `BTN_DPAD_UP`，可直接回 grep `hidkit_codes.h`；词表外的 code 显示 `?`）—— **只加可读视图，`code` 原值照旧**。**仅在状态变化时**输出；`[HID]` 行也开着时紧跟触发它的那一行之后（上位机默认视图里 `[HID]` 是关的，所以通常看不到那行） |
-| `[HIDKIT] mouse slot=%d dx=%d dy=%d wheel=%d` | 鼠标位移与滚轮（仅非零时输出） |
-| `[HIDKIT] pad slot=%d ls=%d,%d rs=%d,%d lt=%d rt=%d btn=●○…` | 手柄绝对状态。**每份解析成功的报文都输出**（手柄报文本身就是当前绝对状态，不去重），故 1kHz 手柄下这行是持续的。`btn=` 是 32 位原生按钮位图，**bit31 在左**：`●`=按下 `○`=抬起（UTF-8，每字符 3 字节）。位序 = 手柄报文原生位序，Switch Pro 为 bit0..7 右组 `Y X B A SR SL R ZR`、bit8..15 共享 `− + RS LS Home Capture`、bit16..23 左组 `下 上 右 左 SR SL L ZL`（bit24..31 恒 ○）；DS5/XInput 见各自布局定义。注意面键 code 遵循 DS5 的物理位置约定（实体 B=南位=`BTN_A`、A=东位=`BTN_B`） |
-| `[HIDKIT] motion slot=%d g=%d,%d,%d a=%d,%d,%d` | 手柄六轴（陀螺仪 + 加速度计），每份含六轴的解析成功报文都输出（Switch Pro 需 `[SWPRO]` 阶段 2 使能 IMU 后才有数据；卸载时补发一次全零帧 = "设备已离开"）。量程约定：±32767 = ±2000 dps / ±4 g，静止时 accel 含重力（向量模长约 8192）。Pro 六轴坐标系对齐 DS5 |
-| `[HIDKIT] dropped slot=%d vid=%04X pid=%04X` | 设备被丢弃（槽位耗尽且策略为 `DROP_NEW`；本固件用默认的 `EVICT_IDLE`，走不到） |
+| `[HID]   dev= 2 itf= 0 len=  8 off=  0: <hex>` | **原始报文**（超 16 字节折行，`off=` 递增标注行内偏移）。受运行期开关控制，见「[运行期输出开关](#运行期输出开关)」 |
+| `[HIDKIT] key slot= 0 code=0x0004 name=KEY_A down\|up` | **语义事件**（键/鼠标按键/手柄按键统一出口，`code` 的段前缀区分类型：`0x00xx` 键盘 HID Usage ID、`0x01xx` 鼠标按键序号、`0x02xx` 手柄 `BTN_*`）。`name=` 是 `code` 对应的按键名（`src/key_names.c` 的词表，命名与 hidkit 的宏一致：`KEY_A` / `MOUSE_BUTTON_LEFT` / `BTN_DPAD_UP`，可直接回 grep `hidkit_codes.h`；词表外的 code 显示 `?`）—— **只加可读视图，`code` 原值照旧**。**仅在状态变化时**输出；`[HID]` 行也开着时紧跟触发它的那一行之后（上位机默认视图里 `[HID]` 是关的，所以通常看不到那行） |
+| `[HIDKIT] mouse slot= 1 dx=     5 dy=    -5 wheel=     0` | 鼠标位移与滚轮（仅非零时输出） |
+| `[HIDKIT] pad slot= 0 ls= -1024,    12 rs=     0, -32767 lt=    0 rt=32767 btn=[□□□□■□□…]` | 手柄绝对状态。**每份解析成功的报文都输出**（手柄报文本身就是当前绝对状态，不去重），故 1kHz 手柄下这行是持续的。`btn=` 是 32 位原生按钮位图，**整体包在一对中括号里、bit31 在左**：`■`(U+25A0)=按下 `□`(U+25A1)=抬起（各 3 字节 UTF-8；宽度随终端对 East Asian Ambiguous 的处理而定——西文终端 1 列、CJK 环境 2 列——但 32 格宽度彼此一致，位图内部始终逐列对齐，右数第 n 格就是 bit(n-1)）。不逐键包 `[■][□]`：那样一行 128 字节，逼近单条记录上限且 1kHz 下白烧带宽。位序 = 手柄报文原生位序，Switch Pro 为 bit0..7 右组 `Y X B A SR SL R ZR`、bit8..15 共享 `− + RS LS Home Capture`、bit16..23 左组 `下 上 右 左 SR SL L ZL`（bit24..31 恒 □）；DS5/XInput 见各自布局定义。注意面键 code 遵循 DS5 的物理位置约定（实体 B=南位=`BTN_A`、A=东位=`BTN_B`） |
+| `[HIDKIT] motion slot= 0 g=    -1,      2, -32767 a=  8100,      0,     -3` | 手柄六轴（陀螺仪 + 加速度计），每份含六轴的解析成功报文都输出（Switch Pro 需 `[SWPRO]` 阶段 2 使能 IMU 后才有数据；卸载时补发一次全零帧 = "设备已离开"）。量程约定：±32767 = ±2000 dps / ±4 g，静止时 accel 含重力（向量模长约 8192）。Pro 六轴坐标系对齐 DS5 |
+| `[HIDKIT] dropped slot= 0 vid=045E pid=02EA` | 设备被丢弃（槽位耗尽且策略为 `DROP_NEW`；本固件用默认的 `EVICT_IDLE`，走不到） |
 | `[HKDBG]  hidkit: ...` | **库内诊断**：库"自己怎么想的"——认领了哪个槽位、为什么不认、槽位被谁挤出、卸载、报文首次未被消费。只在冷路径打点，不随报文速率增长。判读"设备动作为什么没出来"看这行 |
-| `[UNHID] dev=%u itf=%u` | HID 接口拔出 |
-| `[DEVRM] dev=%u` | 设备移除 |
-| `[ERROR] dev=%u ...` | 描述符抓取失败 / 报告订阅失败等 |
-| `[DROP]  lost_lines=%lu` | UART 队列溢出丢弃量补报 |
+| `[UNHID] dev= 2 itf= 0` | HID 接口拔出 |
+| `[DEVRM] dev= 2` | 设备移除 |
+| `[ERROR] dev= 2 ...` | 描述符抓取失败 / 报告订阅失败等 |
+| `[DROP]  lost_lines=      1234` | UART 队列溢出丢弃量补报 |
 | `[TUSB] <TinyUSB 内部日志>` | TinyUSB 栈日志（枚举过程/传输错误等，级别见 `tusb_config.h` 的 `CFG_TUSB_DEBUG`，1=错误 2=+警告 3=+信息），上位机按 `[TUSB]` 头即可单独筛选。受运行期开关控制，见「[运行期输出开关](#运行期输出开关)」 |
 
 挂载时序示例（内容列对齐在第 8 列，HEX 数据列对齐在第 40 列；下面是**开关全开**时的样子 —— 固件上电默认即全开，但 `index.html` 的默认偏好会立刻关掉 `[TUSB]`/`[HID]`，所以用它时看到的是 `[MOUNT]`/描述符行 + `[HIDKIT]`/`[HKDBG]`）：
 
 ```
-[MOUNT] dev=2 vid=046d pid=c52b
-[DEVDS] dev=2 vid=046d pid=c52b bcdUSB=0210 cls=00/00/00 pkt0=64 bcdDev=2700 cfgs=1
-[DEVDS] dev=2 iMfg=1 iProd=2 iSer=3
-[DEVDS] dev=2 len=18 off=0:              12 01 10 02 00 00 00 40 6D 04 2B C5 00 27 01 02
-[DEVDS] dev=2 len=18 off=16:             03 01
-[CFGDS] dev=2 total=59 itfs=1 cfg=1 attr=0xA0 power=50mA
-[CFGDS] dev=2 len=59 off=0:              09 02 3B 00 01 01 00 A0 FA 09 04 00 00 01 03 01
-[STRDS] dev=2 langid=0x0409
-[STRDS] dev=2 Mfg(1)="Logitech"
-[STRDS] dev=2 Prod(2)="USB Receiver"
-[HIDMT] dev=2 vid=046d pid=c52b itf=0 proto=Mouse cls=03 sub=01 eps=1
-[RPTDS] dev=2 itf=0 len=67 off=0:        05 01 09 02 A1 01 09 01 A1 00 05 09 19 01 29 08
-[HID]   dev=2 itf=0 len=8 off=0:         01 00 00 00 00 00 00 00
-[HID]   dev=2 itf=0 len=64 off=0:        21 8F F2 04 69 DD FB 01 00 00 00 01 00 00 00 00
-[HID]   dev=2 itf=0 len=64 off=16:       00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
-[HID]   dev=2 itf=0 len=64 off=32:       00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
-[HID]   dev=2 itf=0 len=64 off=48:       00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+[MOUNT] dev= 2 vid=046d pid=c52b
+[DEVDS] dev= 2 vid=046d pid=c52b bcdUSB=0210 cls=00/00/00 pkt0= 64 bcdDev=2700 cfgs=  1
+[DEVDS] dev= 2 iMfg=  1 iProd=  2 iSer=  3
+[DEVDS] dev= 2 len= 18 off=  0:         12 01 10 02 00 00 00 40 6D 04 2B C5 00 27 01 02
+[DEVDS] dev= 2 len= 18 off= 16:         03 01
+[CFGDS] dev= 2 total= 59 itfs=  1 cfg=  1 attr=0xa0 power= 50mA
+[CFGDS] dev= 2 len= 59 off=  0:         09 02 3B 00 01 01 00 A0 FA 09 04 00 00 01 03 01
+[STRDS] dev= 2 langid=0x0409
+[STRDS] dev= 2 Mfg(  1)="Logitech"
+[STRDS] dev= 2 Prod(  2)="USB Receiver"
+[HIDMT] dev= 2 vid=046d pid=c52b itf= 0 proto=Mouse cls=03 sub=01 eps=  1
+[RPTDS] dev= 2 itf= 0 len= 67 off=  0:  05 01 09 02 A1 01 09 01 A1 00 05 09 19 01 29 08
+[HID]   dev= 2 itf= 0 len=  8 off=  0:  01 00 00 00 00 00 00 00
+[HID]   dev= 2 itf= 0 len= 64 off=  0:  21 8F F2 04 69 DD FB 01 00 00 00 01 00 00 00 00
+[HID]   dev= 2 itf= 0 len= 64 off= 16:  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+[HID]   dev= 2 itf= 0 len= 64 off= 32:  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+[HID]   dev= 2 itf= 0 len= 64 off= 48:  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
 ```
 
 ## 运行期输出开关
@@ -152,11 +154,11 @@ python3 -c "import serial; serial.Serial('/dev/tty.usbserialXXXX', 4000000).writ
 
 ```
 [HKDBG]  hidkit: slot 0 <- 046d:c52b proto=1 kind=2       # 认领键盘（boot 协议，无需描述符）
-[HIDKIT] key slot=0 code=0x0004 name=KEY_A down           # 按下 A（HID Usage 0x04）
-[HIDKIT] key slot=0 code=0x0004 name=KEY_A up             # 抬起
+[HIDKIT] key slot= 0 code=0x0004 name=KEY_A down          # 按下 A（HID Usage 0x04）
+[HIDKIT] key slot= 0 code=0x0004 name=KEY_A up            # 抬起
 [HKDBG]  hidkit: slot 1 <- 046d:c52b proto=2 kind=1       # 认领鼠标（按报告描述符解析）
-[HIDKIT] mouse slot=1 dx=5 dy=-5 wheel=0                  # 向右 5、向上 5
-[HIDKIT] key slot=1 code=0x0100 name=MOUSE_BUTTON_LEFT up # 鼠标左键抬起
+[HIDKIT] mouse slot= 1 dx=     5 dy=    -5 wheel=     0   # 向右 5、向上 5
+[HIDKIT] key slot= 1 code=0x0100 name=MOUSE_BUTTON_LEFT up # 鼠标左键抬起
 [HKDBG]  hidkit: unhandled 046d:c52b proto=0 desc=none    # 不认识：不占槽位，原始采集照旧
 ```
 
